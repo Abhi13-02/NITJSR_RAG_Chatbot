@@ -2,3 +2,5 @@ node_modules
 .env
 /scraped_data
 /test
+
+.idea/
