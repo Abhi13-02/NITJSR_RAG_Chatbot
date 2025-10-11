@@ -23,17 +23,19 @@ class NITJSRReuseServer {
     this.setupRoutes();
   }
 
-  setupMiddleware() {
-    this.app.use(cors({
-      origin: process.env.NODE_ENV === 'production'
-        ? ['https://yourdomain.com']
-        : [
-            '*'
-          ],
-      credentials: true
-    }));
-    this.app.use(express.json({ limit: '5mb' }));
-  }
+    setupMiddleware() {
+        this.app.use(cors({
+            origin: process.env.NODE_ENV === 'production'
+                ? ['https://yourdomain.com']
+                : [
+                    '*'
+                ],
+            credentials: true
+        }));
+        this.app.use(express.json({ limit: '5mb' }));
+
+        this.app.use(express.static(path.join(__dirname, '..', 'public')));
+    }
 
   async tryBuildLinksFromDemo() {
     try {
@@ -127,7 +129,9 @@ class NITJSRReuseServer {
     });
 
     this.app.get('/', (req, res) => {
-      res.json({ name: 'NITJSR Reuse-Only RAG Server', endpoints: ['POST /chat', 'GET /health', 'GET /stats', 'GET /links'] });
+      // res.json({ name: 'NITJSR Reuse-Only RAG Server', endpoints: ['POST /chat', 'GET /health', 'GET /stats', 'GET /links'] });
+      //   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+        res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
     });
   }
 

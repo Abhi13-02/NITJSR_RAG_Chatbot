@@ -4,569 +4,204 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NIT Jamshedpur RAG Chatbot</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-
-        .chat-container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
-            width: 100%;
-            max-width: 900px;
-            height: 700px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .chat-header {
-            background: linear-gradient(45deg, #2c3e50, #3498db);
-            color: white;
-            padding: 20px;
-            text-align: center;
-        }
-
-        .chat-header h1 {
-            font-size: 26px;
-            margin-bottom: 5px;
-        }
-
-        .chat-header p {
-            opacity: 0.9;
-            font-size: 14px;
-        }
-
-        .status-bar {
-            background: #f8f9fa;
-            padding: 12px 20px;
-            border-bottom: 1px solid #e9ecef;
-            font-size: 12px;
-            color: #6c757d;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .status-left {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #dc3545;
-            animation: pulse 2s infinite;
-        }
-
-        .status-dot.online {
-            background: #28a745;
-        }
-
-        .status-dot.initializing {
-            background: #ffc107;
-        }
-
-        .vector-stats {
-            font-size: 11px;
-            opacity: 0.8;
-        }
-
-        .status-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .btn-small {
-            background: none;
-            border: 1px solid #dee2e6;
-            border-radius: 12px;
-            padding: 4px 8px;
-            cursor: pointer;
-            font-size: 11px;
-            color: #6c757d;
-            transition: all 0.3s;
-        }
-
-        .btn-small:hover {
-            background: #3498db;
-            color: white;
-            border-color: #3498db;
-        }
-
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            background: #f8f9fa;
-        }
-
-        .message {
-            margin-bottom: 20px;
-            display: flex;
-            align-items: flex-start;
-            gap: 12px;
-        }
-
-        .message.user {
-            flex-direction: row-reverse;
-        }
-
-        .message-avatar {
-            width: 42px;
-            height: 42px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            color: white;
-            font-size: 16px;
-            flex-shrink: 0;
-        }
-
-        .message.bot .message-avatar {
-            background: #3498db;
-        }
-
-        .message.user .message-avatar {
-            background: #2c3e50;
-        }
-
-        .message-content {
-            max-width: 70%;
-            background: white;
-            padding: 16px;
-            border-radius: 16px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            position: relative;
-        }
-
-        .message.user .message-content {
-            background: #3498db;
-            color: white;
-        }
-
-        .message-metadata {
-            margin-top: 8px;
-            padding-top: 8px;
-            border-top: 1px solid #e9ecef;
-            font-size: 11px;
-            color: #6c757d;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .confidence-score {
-            background: #e9ecef;
-            padding: 2px 6px;
-            border-radius: 8px;
-        }
-
-        .confidence-score.high {
-            background: #d4edda;
-            color: #155724;
-        }
-
-        .confidence-score.medium {
-            background: #fff3cd;
-            color: #856404;
-        }
-
-        .message-sources {
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #e9ecef;
-            font-size: 12px;
-            color: #6c757d;
-        }
-
-        .source-link {
-            display: block;
-            color: #3498db;
-            text-decoration: none;
-            margin: 4px 0;
-            padding: 4px 8px;
-            background: #f8f9fa;
-            border-radius: 6px;
-            transition: all 0.3s;
-        }
-
-        .source-link:hover {
-            background: #3498db;
-            color: white;
-        }
-
-        .chat-input-container {
-            padding: 20px;
-            background: white;
-            border-top: 1px solid #e9ecef;
-            display: flex;
-            gap: 12px;
-        }
-
-        .chat-input {
-            flex: 1;
-            padding: 16px;
-            border: 2px solid #e9ecef;
-            border-radius: 25px;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.3s;
-        }
-
-        .chat-input:focus {
-            border-color: #3498db;
-        }
-
-        .send-button {
-            padding: 16px 28px;
-            background: #3498db;
-            color: white;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            font-weight: bold;
-            transition: all 0.3s;
-            min-width: 80px;
-        }
-
-        .send-button:hover:not(:disabled) {
-            background: #2980b9;
-            transform: translateY(-1px);
-        }
-
-        .send-button:disabled {
-            background: #bdc3c7;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .typing-indicator {
-            display: none;
-            align-items: center;
-            gap: 8px;
-            color: #6c757d;
-            font-style: italic;
-            padding: 12px 20px;
-            background: #f8f9fa;
-        }
-
-        .typing-dots {
-            display: flex;
-            gap: 4px;
-        }
-
-        .typing-dots span {
-            width: 6px;
-            height: 6px;
-            background: #6c757d;
-            border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out both;
-        }
-
-        .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
-        .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
-
-        .quick-questions {
-            padding: 12px 20px;
-            background: #f8f9fa;
-            border-top: 1px solid #e9ecef;
-        }
-
-        .quick-questions h4 {
-            font-size: 12px;
-            color: #6c757d;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-
-        .question-pills {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-
-        .question-pill {
-            padding: 8px 12px;
-            background: white;
-            border: 1px solid #e9ecef;
-            border-radius: 15px;
-            font-size: 12px;
-            cursor: pointer;
-            transition: all 0.3s;
-            white-space: nowrap;
-        }
-
-        .question-pill:hover {
-            background: #3498db;
-            color: white;
-            border-color: #3498db;
-            transform: translateY(-1px);
-        }
-
-        .loading {
-            text-align: center;
-            color: #6c757d;
-            padding: 30px;
-        }
-
-        .loading-spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid #e9ecef;
-            border-top: 3px solid #3498db;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-
-        .error-message {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            margin: 15px;
-            border-radius: 10px;
-            border: 1px solid #f5c6cb;
-        }
-
-        @keyframes bounce {
-            0%, 80%, 100% { 
-                transform: scale(0);
-            } 40% { 
-                transform: scale(1);
-            }
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        @media (max-width: 768px) {
-            .chat-container {
-                height: 95vh;
-                border-radius: 15px;
-                margin: 10px;
-            }
-            
-            .message-content {
-                max-width: 85%;
-            }
-
-            .status-bar {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-
-            .question-pills {
-                flex-direction: column;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="chat-container">
-        <div class="chat-header">
-            <h1>🎓 NIT Jamshedpur RAG Chatbot</h1>
+<div class="chat-container">
+    <div class="chat-header">
+        <img src="./assets/logo.png" alt="NIT Jamshedpur Logo" class="chat-header-logo">
+        <div class="chat-header-text">
+            <h1>NIT Jamshedpur Chatbot</h1>
             <p>Powered by LangChain & Pinecone Vector Database</p>
-        </div>
-
-        <div class="status-bar">
-            <div class="status-left">
-                <div class="status-indicator">
-                    <div class="status-dot" id="status-dot"></div>
-                    <span id="status-text">Connecting...</span>
-                </div>
-                <div class="vector-stats" id="vector-stats">
-                    Vector DB: Initializing...
-                </div>
-            </div>
-            <div class="status-actions">
-                <button class="btn-small" onclick="refreshData()">🔄 Refresh</button>
-                <button class="btn-small" onclick="showStats()">📊 Stats</button>
-                <button class="btn-small" onclick="showSources()">📚 Sources</button>
-            </div>
-        </div>
-
-        <div class="chat-messages" id="chat-messages">
-            <div class="loading" id="loading">
-                <div class="loading-spinner"></div>
-                <p>🚀 Initializing RAG system...</p>
-                <p style="font-size: 12px; margin-top: 10px; opacity: 0.7;">Loading embeddings and vector database...</p>
-            </div>
-        </div>
-
-        <div class="typing-indicator" id="typing-indicator">
-            <span>AI is thinking</span>
-            <div class="typing-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-            </div>
-        </div>
-
-        <div class="quick-questions">
-            <h4>💡 Quick Questions</h4>
-            <div class="question-pills">
-                <div class="question-pill" onclick="askQuestion('What is the highest placement package?')">💰 Highest Package</div>
-                <div class="question-pill" onclick="askQuestion('What is the placement percentage?')">📊 Placement Rate</div>
-                <div class="question-pill" onclick="askQuestion('Which companies visit for placements?')">🏢 Top Companies</div>
-                <div class="question-pill" onclick="askQuestion('CSE branch placement statistics')">💻 CSE Placements</div>
-                <div class="question-pill" onclick="askQuestion('Tell me about internship opportunities')">🎯 Internships</div>
-            </div>
-        </div>
-
-        <div class="chat-input-container">
-            <input 
-                type="text" 
-                id="chat-input" 
-                class="chat-input" 
-                placeholder="Ask about placements, packages, companies, statistics..."
-                onkeypress="handleKeyPress(event)"
-            >
-            <button id="send-button" class="send-button" onclick="sendMessage()">Send</button>
         </div>
     </div>
 
-    <script>
-        let isInitialized = false;
-        let isLoading = false;
-        let systemStats = null;
+    <div class="status-bar">
+        <div class="status-left">
+            <div class="status-indicator">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">Connecting...</span>
+            </div>
+            <div class="vector-stats" id="vector-stats">
+                Vector DB: Initializing...
+            </div>
+        </div>
+        <div class="status-actions">
+            <button class="btn-small" onclick="app.refreshData()">Refresh</button>
+            <button class="btn-small" onclick="app.showStats()">Statistics</button>
+            <button class="btn-small" onclick="app.showSources()">Sources</button>
+        </div>
+    </div>
 
-        // Check server health and initialize
-        async function initializeChat() {
-            try {
-                const response = await fetch('/health');
-                const data = await response.json();
-                
-                if (data.status === 'healthy') {
-                    updateStatus('online', 'Connected');
-                    updateVectorStats(data.vectorDatabase);
-                    
-                    if (!data.initialized) {
-                        updateStatus('initializing', 'Initializing RAG system...');
-                        const initResponse = await fetch('/initialize', { method: 'POST' });
-                        const initData = await initResponse.json();
-                        
-                        if (initData.success) {
-                            updateStatus('online', 'Ready');
-                        } else {
-                            throw new Error(initData.error);
-                        }
-                    }
-                    
-                    isInitialized = true;
-                    hideLoading();
-                    showWelcomeMessage();
-                } else {
-                    throw new Error(data.error || 'Server unhealthy');
-                }
-            } catch (error) {
-                console.error('Failed to connect:', error);
-                updateStatus('offline', 'Connection Failed');
-                showErrorMessage(error.message);
-            }
+    <div class="chat-messages" id="chat-messages">
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <p>Initializing RAG system...</p>
+            <p style="font-size: 12px; margin-top: 12px; opacity: 0.7;">Loading embeddings and vector database...</p>
+        </div>
+    </div>
+
+    <div class="typing-indicator" id="typing-indicator">
+        <span>Processing your query</span>
+        <div class="typing-dots">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+    </div>
+
+    <div class="quick-questions">
+        <h4>Quick Questions</h4>
+        <div class="question-pills">
+            <div class="question-pill" onclick="app.askQuestion('What is the highest placement package?')">Highest Package</div>
+            <div class="question-pill" onclick="app.askQuestion('What is the placement percentage?')">Placement Rate</div>
+            <div class="question-pill" onclick="app.askQuestion('Which companies visit for placements?')">Top Companies</div>
+            <div class="question-pill" onclick="app.askQuestion('CSE branch placement statistics')">CSE Placements</div>
+            <div class="question-pill" onclick="app.askQuestion('Tell me about internship opportunities')">Internships</div>
+        </div>
+    </div>
+
+    <div class="chat-input-container">
+        <input
+                type="text"
+                id="chat-input"
+                class="chat-input"
+                placeholder="Ask about placements, packages, companies, statistics..."
+        >
+        <button id="send-button" class="send-button" onclick="app.sendMessage()">Send</button>
+    </div>
+</div>
+
+<script type="module">
+    // API Communication Module
+    const API = {
+        async healthCheck() {
+            const response = await fetch('/health');
+            return await response.json();
+        },
+
+        async initialize() {
+            const response = await fetch('/initialize', { method: 'POST' });
+            return await response.json();
+        },
+
+        async sendMessage(question) {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ question })
+            });
+            return await response.json();
+        },
+
+        async scrapeData(force = true) {
+            const response = await fetch('/scrape', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force })
+            });
+            return await response.json();
+        },
+
+        async getStatistics() {
+            const response = await fetch('/stats');
+            return await response.json();
+        },
+
+        async getSources() {
+            const response = await fetch('/sources');
+            return await response.json();
         }
+    };
 
-        function updateStatus(status, text) {
-            const dot = document.getElementById('status-dot');
-            const statusText = document.getElementById('status-text');
-            
-            dot.className = `status-dot ${status}`;
-            statusText.textContent = text;
-        }
+    // UI Management Module
+    const UI = {
+        elements: {},
 
-        function updateVectorStats(stats) {
-            const vectorStats = document.getElementById('vector-stats');
+        init() {
+            this.elements.statusDot = document.getElementById('status-dot');
+            this.elements.statusText = document.getElementById('status-text');
+            this.elements.vectorStats = document.getElementById('vector-stats');
+            this.elements.loading = document.getElementById('loading');
+            this.elements.chatMessages = document.getElementById('chat-messages');
+            this.elements.typingIndicator = document.getElementById('typing-indicator');
+            this.elements.chatInput = document.getElementById('chat-input');
+            this.elements.sendButton = document.getElementById('send-button');
+        },
+
+        updateStatus(status, text) {
+            this.elements.statusDot.className = `status-dot ${status}`;
+            this.elements.statusText.textContent = text;
+        },
+
+        updateVectorStats(stats) {
             if (stats && stats.totalVectors !== undefined) {
-                vectorStats.textContent = `Vector DB: ${stats.totalVectors} documents`;
+                this.elements.vectorStats.textContent = `Vector DB: ${stats.totalVectors} documents`;
             }
-        }
+        },
 
-        function hideLoading() {
-            document.getElementById('loading').style.display = 'none';
-        }
+        hideLoading() {
+            this.elements.loading.style.display = 'none';
+        },
 
-        function showWelcomeMessage() {
-            addMessage('bot', `👋 Welcome to the NIT Jamshedpur RAG Chatbot!
-
-I'm powered by advanced AI technologies:
-• 🧠 LangChain for intelligent processing
-• 🔍 Pinecone vector database for semantic search  
-• 📚 Real-time web scraping for latest data
-• 📄 PDF document analysis
-
-I can help you with:
-• Placement statistics and percentages
-• Package information (highest, average, branch-wise)
-• Company details and recruitment patterns
-• Branch-specific placement data
-• Historical trends and analysis
-
-Ask me anything about NIT Jamshedpur placements!`, [], 1.0, new Date().toISOString());
-        }
-
-        function showErrorMessage(error = 'Unknown error') {
-            const loading = document.getElementById('loading');
-            loading.innerHTML = `
+        showErrorMessage(error = 'Unknown error') {
+            this.elements.loading.innerHTML = `
                 <div class="error-message">
-                    <h3>❌ Connection Failed</h3>
+                    <h3>Connection Failed</h3>
                     <p>Could not connect to the RAG server.</p>
                     <p><strong>Error:</strong> ${error}</p>
-                    <p style="margin-top: 10px; font-size: 12px;">
+                    <p style="margin-top: 12px; font-size: 12px;">
                         Please ensure the server is running and try refreshing the page.
                     </p>
                 </div>
             `;
-        }
+        },
 
-        function addMessage(sender, content, sources = [], confidence = 0, timestamp = null) {
-            const messagesContainer = document.getElementById('chat-messages');
+        showTyping() {
+            this.elements.typingIndicator.style.display = 'flex';
+        },
+
+        hideTyping() {
+            this.elements.typingIndicator.style.display = 'none';
+        },
+
+        enableInput() {
+            this.elements.sendButton.disabled = false;
+            this.elements.chatInput.disabled = false;
+        },
+
+        disableInput() {
+            this.elements.sendButton.disabled = true;
+            this.elements.chatInput.disabled = true;
+        },
+
+        clearInput() {
+            this.elements.chatInput.value = '';
+        },
+
+        getInputValue() {
+            return this.elements.chatInput.value.trim();
+        },
+
+        setInputValue(value) {
+            this.elements.chatInput.value = value;
+        },
+
+        addMessage(sender, content, sources = [], confidence = 0, timestamp = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
 
-            const avatar = sender === 'bot' ? '🤖' : '👤';
-            
-            // Format confidence score
+            const avatar = sender === 'bot' ? 'AI' : 'U';
+
             let confidenceHTML = '';
             if (sender === 'bot' && confidence > 0) {
                 const confidencePercent = Math.round(confidence * 100);
                 let confidenceClass = 'low';
                 if (confidence > 0.8) confidenceClass = 'high';
                 else if (confidence > 0.6) confidenceClass = 'medium';
-                
+
                 confidenceHTML = `
                     <div class="message-metadata">
                         <span>Response generated at ${timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString()}</span>
@@ -576,19 +211,18 @@ Ask me anything about NIT Jamshedpur placements!`, [], 1.0, new Date().toISOStri
                     </div>
                 `;
             }
-            
-            // Format sources
+
             let sourcesHTML = '';
             if (sources && sources.length > 0) {
                 sourcesHTML = `
                     <div class="message-sources">
-                        <strong>📚 Sources (${sources.length}):</strong><br>
-                        ${sources.map((source, index) => 
-                            `<a href="${source.url || '#'}" class="source-link" target="_blank" title="${source.text || ''}">
-                                ${index + 1}. ${source.source || source.title || 'Document'} 
+                        <strong>Sources (${sources.length}):</strong><br>
+                        ${sources.map((source, index) =>
+                    `<a href="${source.url || '#'}" class="source-link" target="_blank" title="${source.text || ''}">
+                                ${index + 1}. ${source.source || source.title || 'Document'}
                                 ${source.score ? `(${Math.round(source.score * 100)}% match)` : ''}
                             </a>`
-                        ).join('')}
+                ).join('')}
                     </div>
                 `;
             }
@@ -602,180 +236,286 @@ Ask me anything about NIT Jamshedpur placements!`, [], 1.0, new Date().toISOStri
                 </div>
             `;
 
-            messagesContainer.appendChild(messageDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            this.elements.chatMessages.appendChild(messageDiv);
+            this.scrollToBottom();
+        },
+
+        scrollToBottom() {
+            this.elements.chatMessages.scrollTop = this.elements.chatMessages.scrollHeight;
         }
+    };
 
-        function showTyping() {
-            document.getElementById('typing-indicator').style.display = 'flex';
+    // State Management Module
+    const State = {
+        isInitialized: false,
+        isLoading: false,
+        systemStats: null,
+
+        setInitialized(value) {
+            this.isInitialized = value;
+        },
+
+        setLoading(value) {
+            this.isLoading = value;
+        },
+
+        setSystemStats(stats) {
+            this.systemStats = stats;
+        },
+
+        getInitialized() {
+            return this.isInitialized;
+        },
+
+        getLoading() {
+            return this.isLoading;
+        },
+
+        getSystemStats() {
+            return this.systemStats;
         }
+    };
 
-        function hideTyping() {
-            document.getElementById('typing-indicator').style.display = 'none';
+    // Message Templates Module
+    const Messages = {
+        welcome() {
+            return `Welcome to the NIT Jamshedpur Placement Assistant.
+
+This system is powered by advanced AI technologies including LangChain for intelligent processing, Pinecone vector database for semantic search, real-time web scraping for latest data, and PDF document analysis.
+
+I can help you with:
+• Placement statistics and percentages
+• Package information (highest, average, branch-wise)
+• Company details and recruitment patterns
+• Branch-specific placement data
+• Historical trends and analysis
+
+Please ask me anything about NIT Jamshedpur placements.`;
+        },
+
+        dataRefreshSuccess(summary, timestamp) {
+            return `Data refresh completed successfully.
+
+Summary:
+• ${summary.totalPages} web pages processed
+• ${summary.totalPDFs} PDF documents analyzed
+• ${summary.totalLinks} links discovered
+• Updated at: ${new Date(timestamp).toLocaleString()}
+
+I now have the latest placement information.`;
+        },
+
+        dataRefreshError() {
+            return 'Failed to refresh data. Using existing information.';
+        },
+
+        statistics(stats) {
+            return `System Statistics:
+
+Server Status:
+• Uptime: ${Math.round(stats.serverUptime / 3600)} hours
+• Node.js: ${stats.nodeVersion}
+• Environment: ${stats.nodeVersion}
+
+Vector Database:
+• Total documents: ${stats.vectorDatabase.totalVectors || 0}
+• Database fullness: ${Math.round((stats.vectorDatabase.indexFullness || 0) * 100)}%
+• Dimension: ${stats.vectorDatabase.dimension || 'N/A'}
+
+Data Sources:
+• Scraped data files: ${stats.scrapedDataFiles}
+• Latest file: ${stats.latestDataFile}
+• System initialized: ${stats.initialized ? 'Yes' : 'No'}
+
+Last updated: ${new Date(stats.timestamp).toLocaleString()}`;
+        },
+
+        statisticsError() {
+            return 'Failed to retrieve system statistics.';
+        },
+
+        sources(sources) {
+            const sourcesText = sources.map((source, index) =>
+                `${index + 1}. ${source.filename}
+   • Scraped: ${new Date(source.timestamp).toLocaleString()}
+   • Pages: ${source.pagesScraped}, PDFs: ${source.pdfsProcessed}
+   • Links: ${source.linksFound}`
+            ).join('\n\n');
+
+            return `Available Data Sources:
+
+${sourcesText}
+
+These sources contain placement data including statistics, company information, package details, and historical trends.`;
+        },
+
+        noSources() {
+            return 'No data sources found. Try refreshing the data first.';
+        },
+
+        sourcesError() {
+            return 'Failed to retrieve data sources.';
+        },
+
+        connectionError(error) {
+            return `Sorry, I encountered an error: ${error}`;
+        },
+
+        requestError() {
+            return 'Sorry, I could not process your request. Please check your connection and try again.';
         }
+    };
 
-        async function sendMessage() {
-            if (isLoading || !isInitialized) return;
+    // Main Application Module
+    const App = {
+        async init() {
+            UI.init();
+            await this.initializeChat();
+            this.setupEventListeners();
+            this.startHealthCheckInterval();
+        },
 
-            const input = document.getElementById('chat-input');
-            const message = input.value.trim();
-            
+        async initializeChat() {
+            try {
+                const data = await API.healthCheck();
+
+                if (data.status === 'healthy') {
+                    UI.updateStatus('online', 'Connected');
+                    UI.updateVectorStats(data.vectorDatabase);
+
+                    if (!data.initialized) {
+                        UI.updateStatus('initializing', 'Initializing RAG system...');
+                        const initData = await API.initialize();
+
+                        if (initData.success) {
+                            UI.updateStatus('online', 'Ready');
+                        } else {
+                            throw new Error(initData.error);
+                        }
+                    }
+
+                    State.setInitialized(true);
+                    UI.hideLoading();
+                    UI.addMessage('bot', Messages.welcome(), [], 1.0, new Date().toISOString());
+                } else {
+                    throw new Error(data.error || 'Server unhealthy');
+                }
+            } catch (error) {
+                console.error('Failed to connect:', error);
+                UI.updateStatus('offline', 'Connection Failed');
+                UI.showErrorMessage(error.message);
+            }
+        },
+
+        setupEventListeners() {
+            const input = UI.elements.chatInput;
+            input.addEventListener('keypress', (event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    this.sendMessage();
+                }
+            });
+        },
+
+        async sendMessage() {
+            if (State.getLoading() || !State.getInitialized()) return;
+
+            const message = UI.getInputValue();
             if (!message) return;
 
-            // Add user message
-            addMessage('user', message);
-            input.value = '';
-
-            // Show typing indicator
-            showTyping();
-            isLoading = true;
-            document.getElementById('send-button').disabled = true;
+            UI.addMessage('user', message);
+            UI.clearInput();
+            UI.showTyping();
+            State.setLoading(true);
+            UI.disableInput();
 
             try {
-                const response = await fetch('/chat', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ question: message })
-                });
-
-                const data = await response.json();
+                const data = await API.sendMessage(message);
 
                 if (data.success) {
-                    addMessage('bot', data.answer, data.sources, data.confidence, data.timestamp);
+                    UI.addMessage('bot', data.answer, data.sources, data.confidence, data.timestamp);
                 } else {
-                    addMessage('bot', `❌ Sorry, I encountered an error: ${data.error}`);
+                    UI.addMessage('bot', Messages.connectionError(data.error));
                 }
-
             } catch (error) {
                 console.error('Error sending message:', error);
-                addMessage('bot', '❌ Sorry, I couldn\'t process your request. Please check your connection and try again.');
+                UI.addMessage('bot', Messages.requestError());
             } finally {
-                hideTyping();
-                isLoading = false;
-                document.getElementById('send-button').disabled = false;
+                UI.hideTyping();
+                State.setLoading(false);
+                UI.enableInput();
             }
-        }
+        },
 
-        function askQuestion(question) {
-            const input = document.getElementById('chat-input');
-            input.value = question;
-            sendMessage();
-        }
+        askQuestion(question) {
+            UI.setInputValue(question);
+            this.sendMessage();
+        },
 
-        function handleKeyPress(event) {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                sendMessage();
-            }
-        }
+        async refreshData() {
+            if (State.getLoading()) return;
 
-        async function refreshData() {
-            if (isLoading) return;
+            UI.updateStatus('initializing', 'Refreshing data...');
 
-            updateStatus('initializing', 'Refreshing data...');
-            
             try {
-                const response = await fetch('/scrape', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ force: true })
-                });
-                const data = await response.json();
-                
-                if (data.success) {
-                    updateStatus('online', 'Ready');
-                    addMessage('bot', `🔄 Data refresh completed successfully!
-                    
-📊 Summary:
-• ${data.summary.totalPages} web pages processed
-• ${data.summary.totalPDFs} PDF documents analyzed  
-• ${data.summary.totalLinks} links discovered
-• Updated at: ${new Date(data.timestamp).toLocaleString()}
+                const data = await API.scrapeData(true);
 
-I now have the latest placement information!`);
+                if (data.success) {
+                    UI.updateStatus('online', 'Ready');
+                    UI.addMessage('bot', Messages.dataRefreshSuccess(data.summary, data.timestamp));
                 } else {
                     throw new Error(data.error);
                 }
             } catch (error) {
                 console.error('Error refreshing data:', error);
-                updateStatus('online', 'Ready');
-                addMessage('bot', '❌ Failed to refresh data. Using existing information.');
+                UI.updateStatus('online', 'Ready');
+                UI.addMessage('bot', Messages.dataRefreshError());
             }
-            
-        }
+        },
 
-        async function showStats() {
+        async showStats() {
             try {
-                const response = await fetch('/stats');
-                const data = await response.json();
-                
+                const data = await API.getStatistics();
+
                 if (data.success) {
-                    const stats = data.statistics;
-                    addMessage('bot', `📊 System Statistics:
-
-🖥️ **Server Status:**
-• Uptime: ${Math.round(stats.serverUptime / 3600)} hours
-• Node.js: ${stats.nodeVersion}
-• Environment: ${stats.nodeVersion}
-
-🔍 **Vector Database:**
-• Total documents: ${stats.vectorDatabase.totalVectors || 0}
-• Database fullness: ${Math.round((stats.vectorDatabase.indexFullness || 0) * 100)}%
-• Dimension: ${stats.vectorDatabase.dimension || 'N/A'}
-
-📚 **Data Sources:**
-• Scraped data files: ${stats.scrapedDataFiles}
-• Latest file: ${stats.latestDataFile}
-• System initialized: ${stats.initialized ? '✅ Yes' : '❌ No'}
-
-Last updated: ${new Date(stats.timestamp).toLocaleString()}`);
+                    UI.addMessage('bot', Messages.statistics(data.statistics));
                 }
             } catch (error) {
-                addMessage('bot', '❌ Failed to retrieve system statistics.');
+                UI.addMessage('bot', Messages.statisticsError());
             }
-        }
+        },
 
-        async function showSources() {
+        async showSources() {
             try {
-                const response = await fetch('/sources');
-                const data = await response.json();
-                
+                const data = await API.getSources();
+
                 if (data.success && data.sources.length > 0) {
-                    const sourcesText = data.sources.map((source, index) => 
-                        `${index + 1}. **${source.filename}**
-   • Scraped: ${new Date(source.timestamp).toLocaleString()}
-   • Pages: ${source.pagesScraped}, PDFs: ${source.pdfsProcessed}
-   • Links: ${source.linksFound}`
-                    ).join('\n\n');
-
-                    addMessage('bot', `📚 Available Data Sources:
-
-${sourcesText}
-
-These sources contain placement data including statistics, company information, package details, and historical trends.`);
+                    UI.addMessage('bot', Messages.sources(data.sources));
                 } else {
-                    addMessage('bot', '📚 No data sources found. Try refreshing the data first.');
+                    UI.addMessage('bot', Messages.noSources());
                 }
             } catch (error) {
-                addMessage('bot', '❌ Failed to retrieve data sources.');
+                UI.addMessage('bot', Messages.sourcesError());
             }
+        },
+
+        startHealthCheckInterval() {
+            setInterval(async () => {
+                try {
+                    const data = await API.healthCheck();
+                    UI.updateVectorStats(data.vectorDatabase);
+                } catch (error) {
+                    console.log('Health check failed:', error.message);
+                }
+            }, 300000); // 5 minutes
         }
+    };
 
-        // Initialize when page loads
-        window.addEventListener('load', initializeChat);
+    // Make app globally accessible for inline onclick handlers
+    window.app = App;
 
-        // Auto-refresh connection every 5 minutes
-        setInterval(async () => {
-            try {
-                const response = await fetch('/health');
-                const data = await response.json();
-                updateVectorStats(data.vectorDatabase);
-            } catch (error) {
-                console.log('Health check failed:', error.message);
-            }
-        }, 300000); // 5 minutes
-    </script>
+    // Initialize app when DOM is loaded
+    window.addEventListener('load', () => App.init());
+</script>
 </body>
 </html>
