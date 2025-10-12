@@ -24,12 +24,11 @@ class NITJSRReuseServer {
   }
 
     setupMiddleware() {
+        const isProd = process.env.NODE_ENV === 'production';
         this.app.use(cors({
-            origin: process.env.NODE_ENV === 'production'
-                ? ['https://yourdomain.com']
-                : [
-                    '*'
-                ],
+            // In development, reflect the request origin to enable local testing (127.0.0.1, localhost, ::1)
+            // In production, restrict to your allowed domain(s)
+            origin: isProd ? ['https://yourdomain.com'] : true,
             credentials: true
         }));
         this.app.use(express.json({ limit: '5mb' }));

@@ -74,19 +74,32 @@
 
 <script type="module">
     // API Communication Module
+    const API_BASE = (() => {
+        // Allow manual override if window.API_BASE is set
+        if (typeof window !== 'undefined' && window.API_BASE) return window.API_BASE;
+
+        // If the page is opened via a static dev server on 127.0.0.1 (e.g., Live Server),
+        // direct API to the Node server bound on localhost.
+        if (location.hostname === '127.0.0.1') {
+            return 'http://localhost:5500';
+        }
+
+        // Otherwise use relative paths (same-origin) when served by the Node server itself
+        return '';
+    })();
     const API = {
         async healthCheck() {
-            const response = await fetch('/health');
+            const response = await fetch(`${API_BASE}/health`);
             return await response.json();
         },
 
         async initialize() {
-            const response = await fetch('/initialize', { method: 'POST' });
+            const response = await fetch(`${API_BASE}/initialize`, { method: 'POST' });
             return await response.json();
         },
 
         async sendMessage(question) {
-            const response = await fetch('/chat', {
+            const response = await fetch(`${API_BASE}/chat`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -97,7 +110,7 @@
         },
 
         async scrapeData(force = true) {
-            const response = await fetch('/scrape', {
+            const response = await fetch(`${API_BASE}/scrape`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ force })
@@ -106,12 +119,12 @@
         },
 
         async getStatistics() {
-            const response = await fetch('/stats');
+            const response = await fetch(`${API_BASE}/stats`);
             return await response.json();
         },
 
         async getSources() {
-            const response = await fetch('/sources');
+            const response = await fetch(`${API_BASE}/sources`);
             return await response.json();
         }
     };
