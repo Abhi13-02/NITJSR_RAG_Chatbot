@@ -557,3 +557,42 @@ body {
 .chat-messages::-webkit-scrollbar-thumb:hover {
     background: #555;
 }
+
+.message-content h2,
+.message-content h3 {
+    color: #274187;
+    margin-top: 12px;
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.message-content h2 {
+    font-size: 16px;
+    border-bottom: 2px solid #274187;
+    padding-bottom: 4px;
+}
+
+.message-content h3 {
+    font-size: 14px;
+}
+
+.message-content ul,
+.message-content ol {
+    margin-left: 20px;
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.message-content li {
+    margin-bottom: 6px;
+    line-height: 1.5;
+}
+
+.message-content p {
+    margin-bottom: 10px;
+}
+
+.message-content strong {
+    color: #274187;
+    font-weight: 600;
+}
