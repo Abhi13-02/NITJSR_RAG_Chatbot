@@ -247,14 +247,9 @@
         },
 
         formatResponse(text) {
-            // Convert headers
             text = text.replace(/^### (.*$)/gim, '<h3>$1</h3>');
             text = text.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-            
-            // Convert bold
             text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            
-            // Convert bullet lists
             let lines = text.split('\n');
             let inList = false;
             let formattedLines = [];
