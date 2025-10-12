@@ -53,11 +53,11 @@
     <div class="quick-questions">
         <h4>Quick Questions</h4>
         <div class="question-pills">
-            <div class="question-pill" onclick="app.askQuestion('What is the highest placement package?')">Highest Package</div>
-            <div class="question-pill" onclick="app.askQuestion('What is the placement percentage?')">Placement Rate</div>
-            <div class="question-pill" onclick="app.askQuestion('Which companies visit for placements?')">Top Companies</div>
-            <div class="question-pill" onclick="app.askQuestion('CSE branch placement statistics')">CSE Placements</div>
-            <div class="question-pill" onclick="app.askQuestion('Tell me about internship opportunities')">Internships</div>
+            <div class="question-pill" onclick="app.askQuestion('Tell me about NIT Jamshedpur?')">About NITJSR</div>
+            <div class="question-pill" onclick="app.askQuestion('How to reach NIT Jamshedpur?')">Location</div>
+            <div class="question-pill" onclick="app.askQuestion('Tell me about hostel facilities in NIT Jamshedpur?')">Hostel Facilities</div>
+            <div class="question-pill" onclick="app.askQuestion('What is the NIRF Ranking of NIT Jamshedpur?')">Ranking</div>
+            <div class="question-pill" onclick="app.askQuestion('Tell me about the wardens of NIT Jamshedpur?')">Warden</div>
         </div>
     </div>
 
@@ -227,10 +227,12 @@
                 `;
             }
 
+            const formattedContent = sender === 'bot' ? this.formatResponse(content) : content.replace(/\n/g, '<br>');
+
             messageDiv.innerHTML = `
                 <div class="message-avatar">${avatar}</div>
                 <div class="message-content">
-                    ${content.replace(/\n/g, '<br>')}
+                    ${formattedContent}
                     ${sourcesHTML}
                     ${confidenceHTML}
                 </div>
@@ -242,6 +244,37 @@
 
         scrollToBottom() {
             this.elements.chatMessages.scrollTop = this.elements.chatMessages.scrollHeight;
+        },
+
+        formatResponse(text) {
+            text = text.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+            text = text.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+            text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            let lines = text.split('\n');
+            let inList = false;
+            let formattedLines = [];
+            
+            for (let line of lines) {
+                if (line.trim().match(/^\* /)) {
+                    if (!inList) {
+                        formattedLines.push('<ul>');
+                        inList = true;
+                    }
+                    formattedLines.push('<li>' + line.trim().substring(2) + '</li>');
+                } else {
+                    if (inList) {
+                        formattedLines.push('</ul>');
+                        inList = false;
+                    }
+                    if (line.trim()) {
+                        formattedLines.push('<p>' + line + '</p>');
+                    }
+                }
+            }
+            
+            if (inList) formattedLines.push('</ul>');
+            
+            return formattedLines.join('\n').replace(/<p>\s*<\/p>/g, '');
         }
     };
 
