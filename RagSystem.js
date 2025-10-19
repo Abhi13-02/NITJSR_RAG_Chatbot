@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
-import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
+import { CohereEmbeddings } from '@langchain/cohere';
 
 dotenv.config();
 
@@ -36,10 +36,22 @@ class NITJSRRAGSystem {
             // Get or create index
             await this.initializePineconeIndex();
 
-            // Initialize embeddings using Gemini
-            this.embeddings = new GoogleGenerativeAIEmbeddings({
-                apiKey: process.env.GEMINI_API_KEY,
-                modelName: 'embedding-001',
+            // Optional: verify index dimension to match Cohere embeddings (1024)
+            try {
+                const stats = await this.index.describeIndexStats();
+                if (stats?.dimension && stats.dimension !== 1024) {
+                    console.warn(`Pinecone index '${process.env.PINECONE_INDEX_NAME.trim()}' has dimension ${stats.dimension}, but Cohere embeddings require 1024.`);
+                    console.warn('Please recreate the index with dimension 1024 to proceed.');
+                }
+            } catch (e) {
+                console.warn('Could not read Pinecone index stats:', e?.message || e);
+            }
+
+            // Initialize embeddings using Cohere
+            this.embeddings = new CohereEmbeddings({
+                apiKey: process.env.COHERE_API_KEY,
+                model: process.env.COHERE_EMBED_MODEL || 'embed-english-v3.0',
+                inputType: 'search_document',
             });
 
             this.textSplitter = new RecursiveCharacterTextSplitter({
@@ -69,7 +81,7 @@ class NITJSRRAGSystem {
                 console.log(`🔨 Creating new Pinecone index: ${indexName}`);
                 await this.pinecone.createIndex({
                     name: indexName,
-                    dimension: 768, // Gemini embedding dimension
+                    dimension: 1024, // Cohere v3 embedding dimension
                     metric: 'cosine',
                     spec: {
                         serverless: {
@@ -328,7 +340,7 @@ class NITJSRRAGSystem {
             console.log(`📊 Prepared ${documents.length} enhanced document chunks for embedding`);
 
             // Generate embeddings and store in batches
-            const batchSize = 5; // Conservative batch size for Gemini API limits
+            const batchSize = 32; // Reasonable batch size for Cohere
             const batches = [];
             
             for (let i = 0; i < documents.length; i += batchSize) {
@@ -340,9 +352,9 @@ class NITJSRRAGSystem {
                 console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length}...`);
 
                 try {
-                    // Generate embeddings for batch
-                    const embeddings = await Promise.all(
-                        batch.map(doc => this.embeddings.embedQuery(doc.text))
+                    // Generate embeddings for batch (documents)
+                    const embeddings = await this.embeddings.embedDocuments(
+                        batch.map(doc => doc.text)
                     );
 
                     // Prepare vectors for Pinecone
@@ -563,7 +575,7 @@ Answer:`;
             const stats = await this.index.describeIndexStats();
             return {
                 totalVectors: stats.totalVectorCount || 0,
-                dimension: stats.dimension || 768,
+                dimension: stats.dimension || 1024,
                 indexFullness: stats.indexFullness || 0,
                 linkDatabaseSize: this.linkDatabase.size
             };

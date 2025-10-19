@@ -72,7 +72,7 @@ class NITJSRServer {
                     initialized: this.isInitialized,
                     vectorDatabase: indexStats,
                     environment: process.env.NODE_ENV || 'development',
-                    aiProvider: 'Google Gemini',
+                    aiProvider: 'Gemini (LLM) + Cohere (embeddings)',
                     pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim() || 'Not configured'
                 });
             } catch (error) {
@@ -95,9 +95,9 @@ class NITJSRServer {
 
                 res.json({
                     success: true,
-                    message: 'Gemini RAG system initialized successfully',
+                    message: 'RAG system initialized (Gemini LLM + Cohere embeddings)',
                     timestamp: new Date().toISOString(),
-                    aiProvider: 'Google Gemini',
+                    aiProvider: 'Gemini (LLM) + Cohere (embeddings)',
                     pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim()
                 });
             } catch (error) {
@@ -135,7 +135,7 @@ class NITJSRServer {
                     success: true,
                     question: question,
                     timestamp: new Date().toISOString(),
-                    aiProvider: 'Google Gemini',
+                    aiProvider: 'Gemini (LLM) + Cohere (embeddings)',
                     ...response
                 });
 
@@ -173,7 +173,7 @@ class NITJSRServer {
                     message: 'Comprehensive data scraped and processed successfully',
                     summary: scrapeResult.summary,
                     timestamp: new Date().toISOString(),
-                    aiProvider: 'Google Gemini'
+                    aiProvider: 'Gemini (LLM) + Cohere (embeddings)'
                 });
 
             } catch (error) {
@@ -210,7 +210,7 @@ class NITJSRServer {
                     success: true,
                     statistics: {
                         initialized: this.isInitialized,
-                        aiProvider: 'Google Gemini',
+                        aiProvider: 'Gemini (LLM) + Cohere (embeddings)',
                         pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim(),
                         pineconeEnvironment: process.env.PINECONE_ENVIRONMENT?.trim(),
                         vectorDatabase: indexStats,
@@ -380,7 +380,7 @@ class NITJSRServer {
     }
 
     validateEnvironment() {
-        const required = ['GEMINI_API_KEY', 'PINECONE_API_KEY', 'PINECONE_INDEX_NAME', 'PINECONE_ENVIRONMENT'];
+        const required = ['GEMINI_API_KEY', 'COHERE_API_KEY', 'PINECONE_API_KEY', 'PINECONE_INDEX_NAME', 'PINECONE_ENVIRONMENT'];
         const missing = required.filter(key => !process.env[key] || process.env[key].trim() === '');
         
         if (missing.length > 0) {
