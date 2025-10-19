@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { CohereEmbeddings } from '@langchain/cohere';
+import { EmbeddingCache } from './caching/embeddingCache.js';
 
 dotenv.config();
 
@@ -16,12 +17,13 @@ class NITJSRRAGSystem {
         this.textSplitter = null;
         this.isInitialized = false;
         this.linkDatabase = new Map(); // Store links for easy retrieval
+        this.embeddingCache = new EmbeddingCache();
     }
 
     async initialize() {
         if (this.isInitialized) return;
 
-        console.log('🚀 Initializing Gemini + Pinecone RAG System...');
+        console.log('🚀 Initializing Gemini(chat) + Cohere(emb) + Pinecone...');
 
         try {
             // Initialize Google Gemini
@@ -429,8 +431,11 @@ class NITJSRRAGSystem {
         }
 
         try {
-            // Generate embedding for the question using Gemini
-            const questionEmbedding = await this.embeddings.embedQuery(question);
+            // Generate embedding for the question using Cohere with cache
+            const questionEmbedding = await this.embeddingCache.getQueryEmbedding(
+                question,
+                async (q) => await this.embeddings.embedQuery(q)
+            );
 
             // Search Pinecone
             const searchResults = await this.index.query({

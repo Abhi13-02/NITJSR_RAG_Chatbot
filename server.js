@@ -73,6 +73,7 @@ class NITJSRServer {
                     vectorDatabase: indexStats,
                     environment: process.env.NODE_ENV || 'development',
                     aiProvider: 'Gemini (LLM) + Cohere (embeddings)',
+                    embeddingCache: this.ragSystem.embeddingCache?.getStats?.() || null,
                     pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim() || 'Not configured'
                 });
             } catch (error) {
@@ -446,8 +447,8 @@ class NITJSRServer {
     async start(port = process.env.PORT || 3000) {
         try {
             this.server = this.app.listen(port, async () => {
-                console.log(`🚀 NIT Jamshedpur Gemini RAG Server running on port ${port}`);
-                console.log(`🤖 AI Provider: Google Gemini`);
+                console.log(`🚀 NIT Jamshedpur RAG Server (Gemini LLM + Cohere embeddings) running on port ${port}`);
+                console.log(`🤖 AI Provider: Gemini (LLM) + Cohere (embeddings)`);
                 console.log(`📍 Health check: http://localhost:${port}/health`);
                 console.log(`💬 Frontend: http://localhost:${port}`);
                 console.log(`📊 Statistics: http://localhost:${port}/stats`);
@@ -457,9 +458,9 @@ class NITJSRServer {
 
                 // Auto-initialize on startup
                 try {
-                    console.log('🔄 Auto-initializing Gemini RAG system...');
+                    console.log('🔄 Auto-initializing RAG system (Gemini + Cohere)...');
                     await this.initializeSystem();
-                    console.log('✅ Server fully operational with Gemini AI!');
+                    console.log('✅ Server fully operational (Gemini LLM + Cohere embeddings)!');
                 } catch (error) {
                     console.error('⚠️ Auto-initialization failed:', error.message);
                     console.log('💡 Manual initialization: POST /initialize');
