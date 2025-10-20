@@ -13,11 +13,20 @@ dotenv.config();
 
 import { NITJSRScraper } from './scraper.js';
 import { NITJSRRAGSystem } from './RagSystem.js';
+import { ResponseCache } from './caching/responseCache.js';
 
 class NITJSRServer {
   constructor() {
     this.app = express();
     this.ragSystem = new NITJSRRAGSystem();
+    // Initialize semantic response cache at server level
+    try {
+      const embedModel = process.env.COHERE_EMBED_MODEL || 'embed-english-v3.0';
+      const modelKey = `cohere:${embedModel}:1024`;
+      this.responseCache = new ResponseCache({ modelKey });
+      const rc = this.responseCache.getStats();
+      console.log(`[ResponseCache] initialized backend=${rc.backend} ttlSeconds=${rc.ttlSeconds} bits=${rc.lshBits} radius=${rc.hammingRadius} threshold=${rc.threshold} modelKey=${rc.modelKey}`);
+    } catch (_) {}
     this.scraper = new NITJSRScraper({
       maxPages: 250,
       maxDepth: 4,
@@ -70,6 +79,8 @@ class NITJSRServer {
           timestamp: new Date().toISOString(),
           initialized: this.isInitialized,
           vectorDatabase: indexStats,
+          embeddingCache: this.ragSystem?.embeddingCache?.getStats?.() || null,
+          responseCache: this.responseCache?.getStats?.() || null,
           environment: process.env.NODE_ENV || 'development',
           aiProvider: 'Google Gemini',
           pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim() || 'Not configured',
@@ -121,7 +132,53 @@ class NITJSRServer {
         }
 
         console.log(`Processing question with Gemini: "${question}"`);
-        const response = await this.ragSystem.chat(question);
+        // Try semantic response cache first (uses ragSystem embedding cache and embeddings)
+        try {
+          if (this.responseCache && this.ragSystem?.embeddingCache && this.ragSystem?.embeddings) {
+            const vector = await this.ragSystem.embeddingCache.getQueryEmbedding(
+              question,
+              async (q) => await this.ragSystem.embeddings.embedQuery(q)
+            );
+            const result = await this.responseCache.getSimilar(vector);
+            if (result?.hit && result.item?.responseText) {
+              console.log(`[ResponseCache] HIT sim=${result.similarity?.toFixed?.(4)} — returning cached answer`);
+              const meta = result.item.metadata || {};
+              return res.json({
+                success: true,
+                question,
+                timestamp: new Date().toISOString(),
+                aiProvider: 'Google Gemini',
+                answer: result.item.responseText,
+                sources: meta.sources || [],
+                relevantLinks: meta.relevantLinks || [],
+                confidence: typeof meta.confidence === 'number' ? meta.confidence : 0,
+              });
+            }
+            // On MISS, continue to generate and then store
+            var _cacheVector = vector;
+          }
+        } catch (e) {
+          console.warn('[ResponseCache] lookup failed:', e?.message || e);
+        }
+
+        const response = await this.ragSystem.chat(question, _cacheVector || null);
+
+        // Store in response cache for future reuse
+        try {
+          if (this.responseCache && _cacheVector && response?.answer) {
+            await this.responseCache.put(_cacheVector, {
+              responseText: response.answer,
+              question,
+              metadata: {
+                sources: response.sources || [],
+                relevantLinks: response.relevantLinks || [],
+                confidence: typeof response.confidence === 'number' ? response.confidence : 0,
+              },
+            });
+          }
+        } catch (e) {
+          console.warn('[ResponseCache] put failed:', e?.message || e);
+        }
 
         res.json({
           success: true,
@@ -195,6 +252,7 @@ class NITJSRServer {
             pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim(),
             pineconeEnvironment: process.env.PINECONE_ENVIRONMENT?.trim(),
             vectorDatabase: indexStats,
+            embeddingCache: this.ragSystem?.embeddingCache?.getStats?.() || null,
             scrapedDataFiles: dataFiles.length,
             latestDataFile: dataFiles[0]?.filename || 'None',
             serverUptime: process.uptime(),
@@ -370,39 +428,54 @@ class NITJSRServer {
     }
 
     try {
-      // Initialize RAG system
+      // Initialize RAG system (clients, models, index handle)
       await this.ragSystem.initialize();
 
-      // Check for existing scraped data
-      const dataDir = path.join(__dirname, 'scraped_data');
-      let latestData = null;
-
+      // Decide whether to (re)embed on init
+      const skipReembedEnv = (process.env.INIT_SKIP_EMBED_IF_INDEX_NOT_EMPTY || 'true').toLowerCase() !== 'false';
+      let shouldEmbedOnInit = true;
       try {
-        const files = await fs.readdir(dataDir);
-        const allFiles = files
-          .filter((f) => f.endsWith('.json'))
-          .sort()
-          .reverse(); // Most recent first
-
-        if (allFiles.length > 0) {
-          console.log(`Loading existing data: ${allFiles[0]}`);
-          const dataPath = path.join(dataDir, allFiles[0]);
-          latestData = JSON.parse(await fs.readFile(dataPath, 'utf8'));
+        const stats = await this.ragSystem.getIndexStats();
+        if (skipReembedEnv && stats && stats.totalVectors && stats.totalVectors > 0) {
+          console.log(`[init] Skipping re-embedding on initialize: index already has ${stats.totalVectors} vectors`);
+          shouldEmbedOnInit = false;
         }
-      } catch (error) {
-        console.log('No existing data found, will need fresh scrape');
+      } catch (e) {
+        console.log('[init] Could not check index stats, proceeding with default initialization path');
       }
 
-      // If no data exists, perform initial scrape
-      if (!latestData) {
-        console.log('Performing initial comprehensive data scrape...');
-        const scrapeResult = await this.scraper.scrapeComprehensive();
-        latestData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
-      }
+      if (shouldEmbedOnInit) {
+        // Check for existing scraped data
+        const dataDir = path.join(__dirname, 'scraped_data');
+        let latestData = null;
 
-      // Process and store documents
-      if (latestData) {
-        await this.ragSystem.processAndStoreDocuments(latestData);
+        try {
+          const files = await fs.readdir(dataDir);
+          const allFiles = files
+            .filter((f) => f.endsWith('.json'))
+            .sort()
+            .reverse(); // Most recent first
+
+          if (allFiles.length > 0) {
+            console.log(`Loading existing data: ${allFiles[0]}`);
+            const dataPath = path.join(dataDir, allFiles[0]);
+            latestData = JSON.parse(await fs.readFile(dataPath, 'utf8'));
+          }
+        } catch (error) {
+          console.log('No existing data found, will need fresh scrape');
+        }
+
+        // If no data exists, perform initial scrape
+        if (!latestData) {
+          console.log('Performing initial comprehensive data scrape...');
+          const scrapeResult = await this.scraper.scrapeComprehensive();
+          latestData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
+        }
+
+        // Process and store documents
+        if (latestData) {
+          await this.ragSystem.processAndStoreDocuments(latestData);
+        }
       }
 
       this.isInitialized = true;

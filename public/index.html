@@ -87,6 +87,14 @@
         // Otherwise use relative paths (same-origin) when served by the Node server itself
         return '';
     })();
+    const DISABLE_AUTO_INIT = (() => {
+        try {
+            const q = new URLSearchParams(location.search);
+            if (q.get('noinit') === '1') return true;
+            return Boolean(window.DISABLE_AUTO_INIT);
+        } catch (_) { return false; }
+    })();
+
     const API = {
         async healthCheck() {
             const response = await fetch(`${API_BASE}/health`);
@@ -429,7 +437,7 @@ These sources contain placement data including statistics, company information, 
                     UI.updateStatus('online', 'Connected');
                     UI.updateVectorStats(data.vectorDatabase);
 
-                    if (!data.initialized) {
+                    if (!data.initialized && !DISABLE_AUTO_INIT) {
                         UI.updateStatus('initializing', 'Initializing RAG system...');
                         const initData = await API.initialize();
 
@@ -438,6 +446,8 @@ These sources contain placement data including statistics, company information, 
                         } else {
                             throw new Error(initData.error);
                         }
+                    } else if (!data.initialized && DISABLE_AUTO_INIT) {
+                        UI.updateStatus('idle', 'Server not initialized');
                     }
 
                     State.setInitialized(true);

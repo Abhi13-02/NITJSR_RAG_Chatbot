@@ -39,7 +39,7 @@
     "lru-cache": "^11.2.2"
   },
   "optionalDependencies": {
-    "@google/generative-ai": "^0.2.1",
+    "@google/generative-ai": "^0.24.1",
     "@langchain/google-genai": "^0.0.8",
     "@pinecone-database/pinecone": "^2.2.2",
     "axios": "^1.11.0",

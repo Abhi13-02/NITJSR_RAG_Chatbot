@@ -64,8 +64,10 @@ export class EmbeddingCache {
         if (raw) {
           const obj = JSON.parse(raw);
           this.hits++;
+          console.log(`[EmbeddingCache] HIT backend=redis key=${key} created_at=${obj.created_at}`);
           return base64ToFloatArray(obj.vector_b64);
         }
+        console.log(`[EmbeddingCache] MISS backend=redis key=${key}`);
       } catch (e) {
         console.warn('[EmbeddingCache] Redis get failed:', e?.message || e);
       }
@@ -73,8 +75,10 @@ export class EmbeddingCache {
       const obj = this.lru.get(key);
       if (obj) {
         this.hits++;
+        console.log(`[EmbeddingCache] HIT backend=memory key=${key} created_at=${obj.created_at}`);
         return base64ToFloatArray(obj.vector_b64);
       }
+      console.log(`[EmbeddingCache] MISS backend=memory key=${key}`);
     }
 
     // Miss: compute
@@ -94,11 +98,13 @@ export class EmbeddingCache {
         } else {
           await this.redis.set(key, JSON.stringify(payload));
         }
+        console.log(`[EmbeddingCache] SET backend=redis key=${key} ttlSeconds=${this.ttlSeconds}`);
       } catch (e) {
         console.warn('[EmbeddingCache] Redis set failed:', e?.message || e);
       }
     } else {
       this.lru.set(key, payload);
+      console.log(`[EmbeddingCache] SET backend=memory key=${key} ttlSeconds=${this.ttlSeconds}`);
     }
 
     return vector;

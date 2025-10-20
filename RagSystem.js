@@ -18,6 +18,10 @@ class NITJSRRAGSystem {
         this.isInitialized = false;
         this.linkDatabase = new Map(); // Store links for easy retrieval
         this.embeddingCache = new EmbeddingCache();
+        try {
+            const ec = this.embeddingCache.getStats();
+            console.log(`[EmbeddingCache] initialized backend=${ec.backend} ttlSeconds=${ec.ttlSeconds} namespace=${ec.namespace}`);
+        } catch (_) {}
     }
 
     async initialize() {
@@ -28,7 +32,7 @@ class NITJSRRAGSystem {
         try {
             // Initialize Google Gemini
             this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-            this.chatModel = this.genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            this.chatModel = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
             // Initialize Pinecone
             this.pinecone = new Pinecone({
@@ -73,7 +77,7 @@ class NITJSRRAGSystem {
 
     async initializePineconeIndex() {
         const indexName = process.env.PINECONE_INDEX_NAME.trim();
-        
+
         try {
             // Check if index exists
             const indexList = await this.pinecone.listIndexes();
@@ -423,7 +427,7 @@ class NITJSRRAGSystem {
         return relevantLinks;
     }
 
-    async queryDocuments(question, topK = 8) { // Increased topK for better context
+    async queryDocuments(question, topK = 8, precomputedEmbedding = null) { // Increased topK for better context
         console.log(`🔍 Searching for: "${question}"`);
 
         if (!this.isInitialized) {
@@ -431,11 +435,15 @@ class NITJSRRAGSystem {
         }
 
         try {
-            // Generate embedding for the question using Cohere with cache
-            const questionEmbedding = await this.embeddingCache.getQueryEmbedding(
+            // Generate embedding for the question using Cohere with cache (reuse if provided)
+            const questionEmbedding = precomputedEmbedding || await this.embeddingCache.getQueryEmbedding(
                 question,
                 async (q) => await this.embeddings.embedQuery(q)
             );
+            try {
+                const ecStats = this.embeddingCache.getStats();
+                console.log(`[EmbeddingCache] stats hits=${ecStats.hits} misses=${ecStats.misses} backend=${ecStats.backend}`);
+            } catch (_) {}
 
             // Search Pinecone
             const searchResults = await this.index.query({
@@ -551,10 +559,21 @@ Answer:`;
         }
     }
 
-    async chat(question) {
+    async chat(question, precomputedEmbedding = null) {
         try {
             // Search for relevant documents
-            const relevantDocs = await this.queryDocuments(question, 8);
+            // Compute question embedding once and reuse across cache + search
+            const questionEmbedding = precomputedEmbedding || await this.embeddingCache.getQueryEmbedding(
+                question,
+                async (q) => await this.embeddings.embedQuery(q)
+            );
+            try {
+                const ecStats = this.embeddingCache.getStats();
+                console.log(`[EmbeddingCache] stats hits=${ecStats.hits} misses=${ecStats.misses} backend=${ecStats.backend}`);
+            } catch (_) {}
+
+            // Search for relevant documents (reuse embedding)
+            const relevantDocs = await this.queryDocuments(question, 8, questionEmbedding);
 
             if (relevantDocs.length === 0) {
                 return {
@@ -604,3 +623,12 @@ Answer:`;
 }
 
 export { NITJSRRAGSystem };
+
+
+
+
+
+
+
+
+
