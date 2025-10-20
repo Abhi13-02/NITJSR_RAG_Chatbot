@@ -7,13 +7,16 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "scrape": "node scripts/scrape.js",
+    "embed": "node scripts/embed.js",
+    "serve": "node scripts/serve.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:redis-emb-cache": "node caching/test_embedding_cache.js",
     "inspect:redis-emb-key": "node caching/inspect_embedding_key.js",
-    "demo:scrape": "node demo/scrape.js",
-    "demo:embed": "node demo/embed.js",
-    "demo:serve": "node demo/server.js",
-    "demo:serve:reuse": "node demo/server-reuse.js"
+    "demo:scrape": "node scripts/scrape.js",
+    "demo:embed": "node scripts/embed.js",
+    "demo:serve": "node scripts/serve.js",
+    "demo:serve:reuse": "AUTO_INIT=false node scripts/serve.js"
   },
   "keywords": [
     "rag",
