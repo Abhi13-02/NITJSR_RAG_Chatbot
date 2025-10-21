@@ -594,19 +594,30 @@ Answer:`;
         }
     }
 
+   // RagSystem.js — replace your getIndexStats() with this minimal fix
     async getIndexStats() {
-        try {
-            const stats = await this.index.describeIndexStats();
-            return {
-                totalVectors: stats.totalVectorCount || 0,
-                dimension: stats.dimension || 1024,
-                indexFullness: stats.indexFullness || 0,
-                linkDatabaseSize: this.linkDatabase.size
-            };
-        } catch (error) {
-            console.error('❌ Error getting index stats:', error.message);
-            return { error: error.message };
-        }
+    try {
+        const stats = await this.index.describeIndexStats({});
+
+        // NEW: derive total from supported fields
+        const totalFromNamespaces = Object
+        .values(stats?.namespaces ?? {})
+        .reduce((sum, ns) => sum + (ns?.vectorCount ?? 0), 0);
+
+        const totalVectors = (
+        typeof stats?.totalRecordCount === 'number' ? stats.totalRecordCount : totalFromNamespaces
+        );
+
+        return {
+        totalVectors,
+        dimension: stats?.dimension ?? 1024,
+        indexFullness: stats?.indexFullness ?? 0,
+        linkDatabaseSize: this.linkDatabase?.size ?? 0,
+        };
+    } catch (error) {
+        console.error('❌ Error getting index stats:', error.message || error);
+        return { totalVectors: 0, error: String(error?.message || error) };
+    }
     }
 
     async clearIndex() {
