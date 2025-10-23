@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
-import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
+import { CohereEmbeddings } from '@langchain/cohere';
+import { EmbeddingCache } from './caching/embeddingCache.js';
 
 dotenv.config();
 
@@ -16,17 +17,22 @@ class NITJSRRAGSystem {
         this.textSplitter = null;
         this.isInitialized = false;
         this.linkDatabase = new Map(); // Store links for easy retrieval
+        this.embeddingCache = new EmbeddingCache();
+        try {
+            const ec = this.embeddingCache.getStats();
+            console.log(`[EmbeddingCache] initialized backend=${ec.backend} ttlSeconds=${ec.ttlSeconds} namespace=${ec.namespace}`);
+        } catch (_) {}
     }
 
     async initialize() {
         if (this.isInitialized) return;
 
-        console.log('🚀 Initializing Gemini + Pinecone RAG System...');
+        console.log('🚀 Initializing Gemini(chat) + Cohere(emb) + Pinecone...');
 
         try {
             // Initialize Google Gemini
             this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-            this.chatModel = this.genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            this.chatModel = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
             // Initialize Pinecone
             this.pinecone = new Pinecone({
@@ -36,10 +42,22 @@ class NITJSRRAGSystem {
             // Get or create index
             await this.initializePineconeIndex();
 
-            // Initialize embeddings using Gemini
-            this.embeddings = new GoogleGenerativeAIEmbeddings({
-                apiKey: process.env.GEMINI_API_KEY,
-                modelName: 'embedding-001',
+            // Optional: verify index dimension to match Cohere embeddings (1024)
+            try {
+                const stats = await this.index.describeIndexStats();
+                if (stats?.dimension && stats.dimension !== 1024) {
+                    console.warn(`Pinecone index '${process.env.PINECONE_INDEX_NAME.trim()}' has dimension ${stats.dimension}, but Cohere embeddings require 1024.`);
+                    console.warn('Please recreate the index with dimension 1024 to proceed.');
+                }
+            } catch (e) {
+                console.warn('Could not read Pinecone index stats:', e?.message || e);
+            }
+
+            // Initialize embeddings using Cohere
+            this.embeddings = new CohereEmbeddings({
+                apiKey: process.env.COHERE_API_KEY,
+                model: process.env.COHERE_EMBED_MODEL || 'embed-english-v3.0',
+                inputType: 'search_document',
             });
 
             this.textSplitter = new RecursiveCharacterTextSplitter({
@@ -59,7 +77,7 @@ class NITJSRRAGSystem {
 
     async initializePineconeIndex() {
         const indexName = process.env.PINECONE_INDEX_NAME.trim();
-        
+
         try {
             // Check if index exists
             const indexList = await this.pinecone.listIndexes();
@@ -69,7 +87,7 @@ class NITJSRRAGSystem {
                 console.log(`🔨 Creating new Pinecone index: ${indexName}`);
                 await this.pinecone.createIndex({
                     name: indexName,
-                    dimension: 768, // Gemini embedding dimension
+                    dimension: 1024, // Cohere v3 embedding dimension
                     metric: 'cosine',
                     spec: {
                         serverless: {
@@ -328,7 +346,7 @@ class NITJSRRAGSystem {
             console.log(`📊 Prepared ${documents.length} enhanced document chunks for embedding`);
 
             // Generate embeddings and store in batches
-            const batchSize = 5; // Conservative batch size for Gemini API limits
+            const batchSize = 32; // Reasonable batch size for Cohere
             const batches = [];
             
             for (let i = 0; i < documents.length; i += batchSize) {
@@ -340,9 +358,9 @@ class NITJSRRAGSystem {
                 console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length}...`);
 
                 try {
-                    // Generate embeddings for batch
-                    const embeddings = await Promise.all(
-                        batch.map(doc => this.embeddings.embedQuery(doc.text))
+                    // Generate embeddings for batch (documents)
+                    const embeddings = await this.embeddings.embedDocuments(
+                        batch.map(doc => doc.text)
                     );
 
                     // Prepare vectors for Pinecone
@@ -409,7 +427,7 @@ class NITJSRRAGSystem {
         return relevantLinks;
     }
 
-    async queryDocuments(question, topK = 8) { // Increased topK for better context
+    async queryDocuments(question, topK = 8, precomputedEmbedding = null) { // Increased topK for better context
         console.log(`🔍 Searching for: "${question}"`);
 
         if (!this.isInitialized) {
@@ -417,8 +435,15 @@ class NITJSRRAGSystem {
         }
 
         try {
-            // Generate embedding for the question using Gemini
-            const questionEmbedding = await this.embeddings.embedQuery(question);
+            // Generate embedding for the question using Cohere with cache (reuse if provided)
+            const questionEmbedding = precomputedEmbedding || await this.embeddingCache.getQueryEmbedding(
+                question,
+                async (q) => await this.embeddings.embedQuery(q)
+            );
+            try {
+                const ecStats = this.embeddingCache.getStats();
+                console.log(`[EmbeddingCache] stats hits=${ecStats.hits} misses=${ecStats.misses} backend=${ecStats.backend}`);
+            } catch (_) {}
 
             // Search Pinecone
             const searchResults = await this.index.query({
@@ -534,10 +559,21 @@ Answer:`;
         }
     }
 
-    async chat(question) {
+    async chat(question, precomputedEmbedding = null) {
         try {
             // Search for relevant documents
-            const relevantDocs = await this.queryDocuments(question, 8);
+            // Compute question embedding once and reuse across cache + search
+            const questionEmbedding = precomputedEmbedding || await this.embeddingCache.getQueryEmbedding(
+                question,
+                async (q) => await this.embeddings.embedQuery(q)
+            );
+            try {
+                const ecStats = this.embeddingCache.getStats();
+                console.log(`[EmbeddingCache] stats hits=${ecStats.hits} misses=${ecStats.misses} backend=${ecStats.backend}`);
+            } catch (_) {}
+
+            // Search for relevant documents (reuse embedding)
+            const relevantDocs = await this.queryDocuments(question, 8, questionEmbedding);
 
             if (relevantDocs.length === 0) {
                 return {
@@ -558,19 +594,30 @@ Answer:`;
         }
     }
 
+   // RagSystem.js — replace your getIndexStats() with this minimal fix
     async getIndexStats() {
-        try {
-            const stats = await this.index.describeIndexStats();
-            return {
-                totalVectors: stats.totalVectorCount || 0,
-                dimension: stats.dimension || 768,
-                indexFullness: stats.indexFullness || 0,
-                linkDatabaseSize: this.linkDatabase.size
-            };
-        } catch (error) {
-            console.error('❌ Error getting index stats:', error.message);
-            return { error: error.message };
-        }
+    try {
+        const stats = await this.index.describeIndexStats({});
+
+        // NEW: derive total from supported fields
+        const totalFromNamespaces = Object
+        .values(stats?.namespaces ?? {})
+        .reduce((sum, ns) => sum + (ns?.vectorCount ?? 0), 0);
+
+        const totalVectors = (
+        typeof stats?.totalRecordCount === 'number' ? stats.totalRecordCount : totalFromNamespaces
+        );
+
+        return {
+        totalVectors,
+        dimension: stats?.dimension ?? 1024,
+        indexFullness: stats?.indexFullness ?? 0,
+        linkDatabaseSize: this.linkDatabase?.size ?? 0,
+        };
+    } catch (error) {
+        console.error('❌ Error getting index stats:', error.message || error);
+        return { totalVectors: 0, error: String(error?.message || error) };
+    }
     }
 
     async clearIndex() {
@@ -587,3 +634,12 @@ Answer:`;
 }
 
 export { NITJSRRAGSystem };
+
+
+
+
+
+
+
+
+
