@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { MongoClient } from 'mongodb';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -18,7 +19,18 @@ import { ResponseCache } from './caching/responseCache.js';
 class NITJSRServer {
   constructor() {
     this.app = express();
-    this.ragSystem = new NITJSRRAGSystem();
+    this.mongo = {
+      client: null,
+      db: null,
+      pagesColl: null,
+      chunksColl: null,
+      status: 'disconnected',
+      lastError: null,
+      dbName: null,
+      pagesName: null,
+      chunksName: null,
+    };
+    this.ragSystem = new NITJSRRAGSystem({ mongo: this.mongo });
     // Initialize semantic response cache at server level
     try {
       const embedModel = process.env.COHERE_EMBED_MODEL || 'embed-english-v3.0';
@@ -28,13 +40,80 @@ class NITJSRServer {
       console.log(`[ResponseCache] initialized backend=${rc.backend} ttlSeconds=${rc.ttlSeconds} bits=${rc.lshBits} radius=${rc.hammingRadius} threshold=${rc.threshold} modelKey=${rc.modelKey}`);
     } catch (_) {}
     this.scraper = new NITJSRScraper({
-      maxPages: 250,
-      maxDepth: 4,
-      delay: 1000,
+      maxPages: 6,
+      maxDepth: 3,
+      delay: 1500,
     });
     this.isInitialized = false;
     this.setupMiddleware();
     this.setupRoutes();
+  }
+
+  async connectMongo() {
+    if (this.mongo.status === 'connecting') {
+      return this.mongo;
+    }
+    if (this.mongo.status === 'connected' && this.mongo.client) {
+      return this.mongo;
+    }
+
+    const uri = process.env.MONGODB_URI?.trim();
+    if (!uri) {
+      this.mongo.status = 'disabled';
+      console.warn('[mongo] MONGODB_URI not set; change ledger features disabled.');
+      return this.mongo;
+    }
+
+    const dbName = (process.env.MONGODB_DB || 'nitjsr_rag').trim();
+    const pagesName = (process.env.MONGO_PAGES_COLL || 'pages').trim();
+    const chunksName = (process.env.MONGO_CHUNKS_COLL || 'chunks').trim();
+
+    try {
+      this.mongo.status = 'connecting';
+      this.mongo.client = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 7000,
+      });
+      await this.mongo.client.connect();
+      this.mongo.db = this.mongo.client.db(dbName);
+      this.mongo.pagesColl = this.mongo.db.collection(pagesName);
+      this.mongo.chunksColl = this.mongo.db.collection(chunksName);
+      this.mongo.status = 'connected';
+      this.mongo.lastError = null;
+      this.mongo.dbName = dbName;
+      this.mongo.pagesName = pagesName;
+      this.mongo.chunksName = chunksName;
+
+      console.log(`[mongo] Connected db=${dbName} pages=${pagesName} chunks=${chunksName}`);
+    } catch (error) {
+      this.mongo.status = 'error';
+      this.mongo.lastError = error?.message || String(error);
+      console.error('[mongo] Connection failed:', this.mongo.lastError);
+    }
+
+    return this.mongo;
+  }
+
+  async ensureMongoConnected() {
+    if (this.mongo.status === 'connected') return true;
+    await this.connectMongo();
+    return this.mongo.status === 'connected';
+  }
+
+  async loadLatestScrapedData() {
+    const dataDir = path.join(__dirname, 'scraped_data');
+    try {
+      const files = await fs.readdir(dataDir);
+      const latestFile = files
+        .filter((f) => f.endsWith('.json'))
+        .sort()
+        .reverse()[0];
+      if (!latestFile) return null;
+      const filePath = path.join(dataDir, latestFile);
+      const data = JSON.parse(await fs.readFile(filePath, 'utf8'));
+      return { data, filename: latestFile, filepath: filePath };
+    } catch (error) {
+      return null;
+    }
   }
 
   setupMiddleware() {
@@ -81,6 +160,13 @@ class NITJSRServer {
           vectorDatabase: indexStats,
           embeddingCache: this.ragSystem?.embeddingCache?.getStats?.() || null,
           responseCache: this.responseCache?.getStats?.() || null,
+          mongo: {
+            status: this.mongo.status,
+            db: this.mongo.dbName,
+            pagesCollection: this.mongo.pagesName,
+            chunksCollection: this.mongo.chunksName,
+            lastError: this.mongo.lastError,
+          },
           environment: process.env.NODE_ENV || 'development',
           aiProvider: 'Google Gemini',
           pineconeIndex: process.env.PINECONE_INDEX_NAME?.trim() || 'Not configured',
@@ -110,6 +196,47 @@ class NITJSRServer {
       } catch (error) {
         console.error('Initialization failed:', error);
         res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Embed latest scraped dataset into Pinecone + Mongo ledger
+    this.app.post('/embed-latest', async (req, res) => {
+      try {
+        const mongoReady = await this.ensureMongoConnected();
+        if (!mongoReady) {
+          return res.status(503).json({
+            success: false,
+            error: 'MongoDB not connected. Check configuration before embedding.',
+          });
+        }
+
+        await this.ragSystem.initialize();
+
+        const latestBundle = await this.loadLatestScrapedData();
+        if (!latestBundle?.data) {
+          return res
+            .status(404)
+            .json({ success: false, error: 'No scraped data found. Run scraper first.' });
+        }
+
+        const result = await this.ragSystem.processAndStoreDocuments(latestBundle.data);
+        this.isInitialized = true;
+
+        res.json({
+          success: true,
+          message: 'Embedded latest scraped dataset successfully.',
+          filename: latestBundle.filename,
+          runStartedAt: result?.runStartedAt || null,
+          stats: result?.stats || null,
+          ledger: Boolean(result?.ledger),
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[embed-latest] Failed:', error?.message || error);
+        res.status(500).json({
+          success: false,
+          error: error?.message || 'Failed to embed latest scraped dataset.',
+        });
       }
     });
 
@@ -210,6 +337,8 @@ class NITJSRServer {
           await this.ragSystem.clearIndex();
         }
 
+        await this.ensureMongoConnected();
+
         // Process and store new data
         await this.ragSystem.processAndStoreDocuments(scrapedData);
 
@@ -230,6 +359,32 @@ class NITJSRServer {
     this.app.get('/stats', async (req, res) => {
       try {
         const indexStats = await this.ragSystem.getIndexStats();
+        const mongoSummary = {
+          status: this.mongo.status,
+          db: this.mongo.dbName,
+          pagesCollection: this.mongo.pagesName,
+          chunksCollection: this.mongo.chunksName,
+          lastError: this.mongo.lastError,
+          totals: null,
+        };
+
+        if (this.mongo.status === 'connected' && this.mongo.pagesColl && this.mongo.chunksColl) {
+          try {
+            const [pagesTotal, pagesActive, chunksTotal] = await Promise.all([
+              this.mongo.pagesColl.estimatedDocumentCount(),
+              this.mongo.pagesColl.countDocuments({ deleted: false }),
+              this.mongo.chunksColl.estimatedDocumentCount(),
+            ]);
+            mongoSummary.totals = {
+              pages: pagesTotal,
+              pagesActive,
+              chunks: chunksTotal,
+            };
+          } catch (mongoErr) {
+            mongoSummary.lastError = mongoErr?.message || String(mongoErr);
+            mongoSummary.status = 'error';
+          }
+        }
 
         // Get available scraped data files
         const dataDir = path.join(__dirname, 'scraped_data');
@@ -253,12 +408,45 @@ class NITJSRServer {
             pineconeEnvironment: process.env.PINECONE_ENVIRONMENT?.trim(),
             vectorDatabase: indexStats,
             embeddingCache: this.ragSystem?.embeddingCache?.getStats?.() || null,
+            mongo: mongoSummary,
             scrapedDataFiles: dataFiles.length,
             latestDataFile: dataFiles[0]?.filename || 'None',
             serverUptime: process.uptime(),
             nodeVersion: process.version,
             timestamp: new Date().toISOString(),
           },
+        });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Preview diff without embedding
+    this.app.get('/reindex/preview', async (req, res) => {
+      try {
+        const mongoReady = await this.ensureMongoConnected();
+        if (!mongoReady) {
+          return res.status(503).json({
+            success: false,
+            error: 'MongoDB not connected; preview unavailable',
+            mongo: { status: this.mongo.status, lastError: this.mongo.lastError },
+          });
+        }
+
+        const latest = await this.loadLatestScrapedData();
+        if (!latest) {
+          return res.status(404).json({
+            success: false,
+            error: 'No scraped datasets found. Run a scrape first.',
+          });
+        }
+
+        const preview = await this.ragSystem.previewIngestion(latest.data);
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          sourceFile: latest.filename,
+          preview,
         });
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -428,6 +616,11 @@ class NITJSRServer {
     }
 
     try {
+      const mongoReady = await this.ensureMongoConnected();
+      if (!mongoReady) {
+        console.warn('[init] MongoDB not connected; change ledger features will be skipped this run.');
+      }
+
       // Initialize RAG system (clients, models, index handle)
       await this.ragSystem.initialize();
 
@@ -446,24 +639,8 @@ class NITJSRServer {
 
       if (shouldEmbedOnInit) {
         // Check for existing scraped data
-        const dataDir = path.join(__dirname, 'scraped_data');
-        let latestData = null;
-
-        try {
-          const files = await fs.readdir(dataDir);
-          const allFiles = files
-            .filter((f) => f.endsWith('.json'))
-            .sort()
-            .reverse(); // Most recent first
-
-          if (allFiles.length > 0) {
-            console.log(`Loading existing data: ${allFiles[0]}`);
-            const dataPath = path.join(dataDir, allFiles[0]);
-            latestData = JSON.parse(await fs.readFile(dataPath, 'utf8'));
-          }
-        } catch (error) {
-          console.log('No existing data found, will need fresh scrape');
-        }
+        let latestDataBundle = await this.loadLatestScrapedData();
+        let latestData = latestDataBundle?.data;
 
         // If no data exists, perform initial scrape
         if (!latestData) {
@@ -488,6 +665,7 @@ class NITJSRServer {
 
   async start(port = process.env.PORT || 3000) {
     try {
+      await this.connectMongo();
       this.server = this.app.listen(port, async () => {
         console.log(`NIT Jamshedpur Gemini RAG Server running on port ${port}`);
         console.log(`AI Provider: Google Gemini`);
@@ -497,6 +675,8 @@ class NITJSRServer {
         console.log(`Links: http://localhost:${port}/links`);
         console.log(`Test Gemini: http://localhost:${port}/test-gemini`);
         console.log(`Test Pinecone: http://localhost:${port}/test-pinecone`);
+        console.log(`check changes: http://localhost:${port}/reindex/preview`);
+        console.log(`embed latest data: POST http://localhost:${port}/embed-latest`);
 
         // Auto-initialize on startup (configurable)
         const shouldAutoInit = (process.env.AUTO_INIT || 'true').toLowerCase() !== 'false';
@@ -526,11 +706,27 @@ class NITJSRServer {
 
   async shutdown() {
     console.log('Shutting down server...');
+    if (this.mongo?.client) {
+      try {
+        await this.mongo.client.close();
+        console.log('[mongo] connection closed');
+      } catch (error) {
+        console.warn('[mongo] error during shutdown:', error?.message || error);
+      } finally {
+        this.mongo.client = null;
+        this.mongo.db = null;
+        this.mongo.pagesColl = null;
+        this.mongo.chunksColl = null;
+        this.mongo.status = 'disconnected';
+      }
+    }
     if (this.server) {
       this.server.close(() => {
         console.log('Server shutdown complete');
         process.exit(0);
       });
+    } else {
+      process.exit(0);
     }
   }
 }

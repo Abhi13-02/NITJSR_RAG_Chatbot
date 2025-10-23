@@ -16,8 +16,8 @@ class NITJSRScraper {
         this.visited = new Set();
         this.toVisit = new Set();
         this.pdfUrls = new Set();
-        this.maxPages = options.maxPages || 300; // Increased limit
-        this.maxDepth = options.maxDepth || 4;   // Deeper crawling
+        this.maxPages = options.maxPages || 5; // Increased limit
+        this.maxDepth = options.maxDepth || 3;   // Deeper crawling
         this.delay = options.delay || 1500;
         this.baseUrl = 'https://nitjsr.ac.in';
         

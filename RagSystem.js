@@ -4,11 +4,31 @@ import { Pinecone } from '@pinecone-database/pinecone';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { CohereEmbeddings } from '@langchain/cohere';
 import { EmbeddingCache } from './caching/embeddingCache.js';
+import crypto from 'crypto';
 
 dotenv.config();
 
+const hashString = (input) =>
+    crypto.createHash('sha256').update(input || '', 'utf8').digest('hex');
+
+const makeChunkId = (url, index, textHash) => {
+    const urlHash = hashString(url).slice(0, 12);
+    const chunkIndex = String(index).padStart(4, '0');
+    const textHashShort = (textHash || '').slice(0, 10);
+    return `${urlHash}:${chunkIndex}:${textHashShort}`;
+};
+
+const nowIso = () => new Date().toISOString();
+
+const countWords = (text) =>
+    (text || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+
 class NITJSRRAGSystem {
-    constructor() {
+    constructor(options = {}) {
+        const { mongo = null } = options || {};
         this.genAI = null;
         this.pinecone = null;
         this.index = null;
@@ -18,10 +38,27 @@ class NITJSRRAGSystem {
         this.isInitialized = false;
         this.linkDatabase = new Map(); // Store links for easy retrieval
         this.embeddingCache = new EmbeddingCache();
+        this.mongo = mongo;
+        this.pagesColl = mongo?.pagesColl || null;
+        this.chunksColl = mongo?.chunksColl || null;
+        this._mongoIndexesEnsured = false;
+        this._lastLedgerWarning = 0;
         try {
             const ec = this.embeddingCache.getStats();
             console.log(`[EmbeddingCache] initialized backend=${ec.backend} ttlSeconds=${ec.ttlSeconds} namespace=${ec.namespace}`);
         } catch (_) {}
+    }
+
+    refreshMongoHandles() {
+        if (this.mongo?.pagesColl && this.mongo?.chunksColl) {
+            this.pagesColl = this.mongo.pagesColl;
+            this.chunksColl = this.mongo.chunksColl;
+        }
+    }
+
+    mongoAvailable() {
+        this.refreshMongoHandles();
+        return Boolean(this.pagesColl && this.chunksColl);
     }
 
     async initialize() {
@@ -66,6 +103,7 @@ class NITJSRRAGSystem {
                 separators: ['\n\n', '\n', '. ', '! ', '? ', ' ', ''],
             });
 
+            await this.ensureMongoIndexes();
             this.isInitialized = true;
             console.log('✅ Gemini RAG System initialized successfully!');
 
@@ -108,6 +146,28 @@ class NITJSRRAGSystem {
         } catch (error) {
             console.error('❌ Pinecone index initialization failed:', error.message);
             throw error;
+        }
+    }
+
+    async ensureMongoIndexes() {
+        if (!this.mongoAvailable()) {
+            return;
+        }
+        if (this._mongoIndexesEnsured) {
+            return;
+        }
+        try {
+            await Promise.all([
+                this.pagesColl.createIndex({ url: 1 }, { unique: true, background: true }),
+                this.pagesColl.createIndex({ contentHash: 1 }, { background: true }),
+                this.chunksColl.createIndex({ chunkId: 1 }, { unique: true, background: true }),
+                this.chunksColl.createIndex({ url: 1 }, { background: true }),
+                this.chunksColl.createIndex({ url: 1, index: 1 }, { background: true }),
+            ]);
+            this._mongoIndexesEnsured = true;
+            console.log('[mongo] change ledger indexes ensured');
+        } catch (error) {
+            console.warn('[mongo] failed to ensure indexes:', error?.message || error);
         }
     }
 
@@ -181,7 +241,189 @@ class NITJSRRAGSystem {
         console.log(`✅ Built link database with ${this.linkDatabase.size} entries`);
     }
 
-    async processAndStoreDocuments(scrapedData) {
+    prepareIngestionItems(scrapedData = {}) {
+        const items = [];
+        const pages = scrapedData.pages || [];
+        for (const page of pages) {
+            const structuredText = [
+                `Title: ${page.title || ''}`,
+                `URL: ${page.url}`,
+                `Category: ${page.category || 'general'}`,
+                page.headings?.map(h => `Heading ${h.level}: ${h.text}`).join('\n') || '',
+                page.content || '',
+                page.tables?.map(table =>
+                    table.map(row => row.join(' | ')).join('\n')
+                ).join('\n\n') || '',
+                page.lists?.map(list => list.map(item => `- ${item}`).join('\n')).join('\n\n') || '',
+                `Description: ${page.metadata?.description || ''}`,
+                `Keywords: ${page.metadata?.keywords || ''}`
+            ].filter(Boolean).join('\n\n');
+
+            if (!structuredText || structuredText.trim().length <= 100) {
+                continue;
+            }
+
+            const metadataBase = {
+                source: 'webpage',
+                sourceType: 'page',
+                url: page.url,
+                title: page.title,
+                timestamp: page.timestamp,
+                category: page.category || 'general',
+                depth: page.depth || 0,
+                wordCount: page.wordCount || countWords(structuredText),
+                hasLinks: Array.isArray(page.links) && page.links.length > 0,
+                hasTables: Array.isArray(page.tables) && page.tables.length > 0,
+                hasLists: Array.isArray(page.lists) && page.lists.length > 0,
+            };
+
+            items.push({
+                url: page.url,
+                type: page.type || 'page',
+                title: page.title || '',
+                category: page.category || 'general',
+                structuredText,
+                wordCount: page.wordCount || countWords(structuredText),
+                buildChunkMetadata: (index, totalChunks) => ({
+                    ...metadataBase,
+                    chunkIndex: index,
+                    totalChunks,
+                }),
+            });
+        }
+
+        const pdfs = scrapedData.documents?.pdfs || [];
+        for (const pdf of pdfs) {
+            const pdfContent = pdf.text || pdf.content || '';
+            if (!pdfContent || pdfContent.trim().length <= 100) {
+                continue;
+            }
+
+            const structuredPdfText = [
+                `PDF Title: ${pdf.title}`,
+                `URL: ${pdf.url}`,
+                `Category: ${pdf.category || 'general'}`,
+                `Pages: ${pdf.pages}`,
+                `Source Page: ${pdf.sourceTitle || 'Unknown'}`,
+                `Content: ${pdfContent}`
+            ].filter(Boolean).join('\n\n');
+
+            const metadataBase = {
+                source: 'pdf',
+                sourceType: 'pdf_document',
+                url: pdf.url,
+                title: pdf.title,
+                pages: pdf.pages,
+                timestamp: pdf.timestamp,
+                category: pdf.category || 'general',
+                sourceUrl: pdf.sourceUrl,
+                sourceTitle: pdf.sourceTitle,
+                wordCount: pdf.wordCount || countWords(structuredPdfText),
+            };
+
+            items.push({
+                url: pdf.url,
+                type: 'pdf',
+                title: pdf.title || '',
+                category: pdf.category || 'general',
+                structuredText: structuredPdfText,
+                wordCount: pdf.wordCount || countWords(structuredPdfText),
+                buildChunkMetadata: (index, totalChunks) => ({
+                    ...metadataBase,
+                    chunkIndex: index,
+                    totalChunks,
+                }),
+            });
+        }
+
+        if (scrapedData.links) {
+            const linkContent = [
+                `PDF Documents Available:`,
+                scrapedData.links.pdf?.map(link =>
+                    `- ${link.text} - ${link.url} (Found on: ${link.sourceTitle})`
+                ).join('\n') || 'No PDFs found',
+                `\nInternal Pages:`,
+                scrapedData.links.internal?.slice(0, 50).map(link =>
+                    `- ${link.text} - ${link.url}`
+                ).join('\n') || 'No internal links found'
+            ].join('\n');
+
+            if (linkContent.trim().length > 100) {
+                const virtualUrl = 'virtual://links-directory';
+                const metadataBase = {
+                    source: 'links',
+                    sourceType: 'link_directory',
+                    type: 'directory',
+                    timestamp: scrapedData.metadata?.timestamp,
+                    totalPdfs: scrapedData.links.pdf?.length || 0,
+                    totalInternalLinks: scrapedData.links.internal?.length || 0,
+                    url: virtualUrl,
+                    title: 'Links Directory',
+                    category: 'virtual',
+                };
+
+                items.push({
+                    url: virtualUrl,
+                    type: 'page',
+                    title: 'Links Directory',
+                    category: 'virtual',
+                    structuredText: linkContent,
+                    wordCount: countWords(linkContent),
+                    buildChunkMetadata: (index, totalChunks) => ({
+                        ...metadataBase,
+                        chunkIndex: index,
+                        totalChunks,
+                    }),
+                });
+            }
+        }
+
+        const statsContent = [
+            `NIT Jamshedpur Website Statistics and Overview:`,
+            `Total Pages Scraped: ${scrapedData.statistics?.totalPages || 0}`,
+            `Total PDF Documents: ${scrapedData.statistics?.totalPDFs || 0}`,
+            `Total Links Found: ${scrapedData.statistics?.totalLinks || 0}`,
+            `Categories Breakdown:`,
+            Object.entries(scrapedData.categories || {}).map(([cat, items]) =>
+                `- ${cat}: ${items.length} pages`
+            ).join('\n'),
+            `\nAvailable PDF Documents:`,
+            scrapedData.documents?.pdfs?.map(pdf =>
+                `- ${pdf.title} (${pdf.pages} pages, ${pdf.wordCount} words) - ${pdf.category}`
+            ).join('\n') || 'No PDFs processed'
+        ].join('\n');
+
+        if (statsContent.trim().length > 100) {
+            const virtualUrl = 'virtual://statistics';
+            const metadataBase = {
+                source: 'statistics',
+                sourceType: 'summary',
+                type: 'overview',
+                timestamp: scrapedData.metadata?.timestamp,
+                url: virtualUrl,
+                title: 'Website Statistics Overview',
+                category: 'virtual',
+            };
+
+            items.push({
+                url: virtualUrl,
+                type: 'page',
+                title: 'Website Statistics Overview',
+                category: 'virtual',
+                structuredText: statsContent,
+                wordCount: countWords(statsContent),
+                buildChunkMetadata: (index, totalChunks) => ({
+                    ...metadataBase,
+                    chunkIndex: index,
+                    totalChunks,
+                }),
+            });
+        }
+
+        return items;
+    }
+
+    async legacyProcessAndStoreDocuments(scrapedData) {
         console.log('📚 Processing and storing enhanced documents in vector database...');
 
         if (!this.isInitialized) {
@@ -395,6 +637,390 @@ class NITJSRRAGSystem {
             console.error('❌ Error processing enhanced documents:', error.message);
             throw error;
         }
+    }
+
+    async _ingestWithLedger(scrapedData, options = {}) {
+        const { preview = false } = options || {};
+
+        if (!this.isInitialized) {
+            await this.initialize();
+        }
+
+        this.buildLinkDatabase(scrapedData);
+
+        if (!this.mongoAvailable()) {
+            if (preview) {
+                return {
+                    preview: {
+                        fallback: true,
+                        reason: 'MongoDB not connected',
+                        counts: {
+                            pages: { new: 0, modified: 0, unchanged: 0, deletedCandidate: 0 },
+                            chunks: { toEmbed: 0, toDelete: 0 },
+                        },
+                    },
+                };
+            }
+
+            if (Date.now() - this._lastLedgerWarning > 10000) {
+                this._lastLedgerWarning = Date.now();
+                console.warn('[mongo-ledger] MongoDB unavailable; using legacy ingestion path.');
+            }
+            return this.legacyProcessAndStoreDocuments(scrapedData);
+        }
+
+        await this.ensureMongoIndexes();
+
+        const runStartTimestamp = Date.now();
+        const runStartedAt = nowIso();
+        const ingestionItems = this.prepareIngestionItems(scrapedData);
+        console.log(`[mongo-ledger] Starting ${preview ? 'preview ' : ''}ledger ingestion run at ${runStartedAt} with ${ingestionItems.length} source items.`);
+        const seenUrls = new Set();
+        const pagePlans = [];
+        const stats = {
+            pages: { new: 0, modified: 0, unchanged: 0, deletedCandidate: 0 },
+            chunks: { toEmbed: 0, toDelete: 0 },
+        };
+
+        try {
+            for (const item of ingestionItems) {
+                const normalizedText = (item.structuredText || '').trim();
+                if (!normalizedText) {
+                    continue;
+                }
+
+                seenUrls.add(item.url);
+
+                const wordCount = item.wordCount || countWords(normalizedText);
+                const contentHash = hashString(normalizedText);
+                const existingPage = await this.pagesColl.findOne(
+                    { url: item.url },
+                    { projection: { url: 1, contentHash: 1, chunkCount: 1, version: 1, deleted: 1, lastEmbeddedAt: 1 } }
+                );
+
+                let status = 'NEW';
+                if (existingPage && existingPage.deleted) {
+                    status = 'NEW';
+                } else if (existingPage) {
+                    status = existingPage.contentHash === contentHash ? 'UNCHANGED' : 'MODIFIED';
+                }
+
+                const statusKey = status.toLowerCase();
+                if (typeof stats.pages[statusKey] === 'number') {
+                    stats.pages[statusKey] += 1;
+                }
+
+                if (status === 'UNCHANGED') {
+                    pagePlans.push({
+                        url: item.url,
+                        status,
+                        type: item.type,
+                        title: item.title,
+                        category: item.category,
+                        wordCount,
+                        contentHash,
+                        chunkCount: existingPage?.chunkCount || 0,
+                        existingPage,
+                    });
+                    continue;
+                }
+
+                const splits = await this.textSplitter.splitText(normalizedText);
+                const chunkCount = splits.length;
+
+                let existingChunksArr = [];
+                if (existingPage) {
+                    existingChunksArr = await this.chunksColl.find(
+                        { url: item.url },
+                        { projection: { chunkId: 1, textHash: 1 } }
+                    ).toArray();
+                }
+
+                const existingChunkMap = new Map(existingChunksArr.map(doc => [doc.chunkId, doc]));
+                const currentChunkIds = new Set();
+                const chunkInfos = [];
+
+                for (let index = 0; index < splits.length; index++) {
+                    const chunkText = splits[index];
+                    const textHash = hashString(chunkText);
+                    const chunkId = makeChunkId(item.url, index, textHash);
+                    currentChunkIds.add(chunkId);
+
+                    const existingChunk = existingChunkMap.get(chunkId);
+                    if (existingChunk && existingChunk.textHash === textHash) {
+                        continue;
+                    }
+
+                    const metadata = item.buildChunkMetadata(index, chunkCount);
+                    chunkInfos.push({
+                        chunkId,
+                        url: item.url,
+                        index,
+                        text: chunkText,
+                        textHash,
+                        metadata,
+                    });
+                }
+
+                const toDeleteIds = existingChunksArr
+                    .filter(doc => !currentChunkIds.has(doc.chunkId))
+                    .map(doc => doc.chunkId);
+
+                stats.chunks.toEmbed += chunkInfos.length;
+                stats.chunks.toDelete += toDeleteIds.length;
+
+                pagePlans.push({
+                    url: item.url,
+                    status,
+                    type: item.type,
+                    title: item.title,
+                    category: item.category,
+                    wordCount,
+                    contentHash,
+                    chunkCount,
+                    chunkInfos,
+                    toDeleteIds,
+                    existingPage,
+                });
+            }
+
+            console.log(`[mongo-ledger] Page plan summary: new=${stats.pages.new}, modified=${stats.pages.modified}, unchanged=${stats.pages.unchanged}, toEmbed=${stats.chunks.toEmbed}, toDelete=${stats.chunks.toDelete}.`);
+
+            const seenUrlsArray = Array.from(seenUrls);
+            let staleUrls = [];
+            try {
+                const staleDocs = await this.pagesColl.find(
+                    { deleted: false, url: { $nin: seenUrlsArray } },
+                    { projection: { url: 1 } }
+                ).toArray();
+                staleUrls = staleDocs.map(doc => doc.url);
+                stats.pages.deletedCandidate = staleUrls.length;
+            } catch (error) {
+                console.warn('[mongo-ledger] failed to compute stale pages:', error?.message || error);
+            }
+
+            if (preview) {
+                console.log('[mongo-ledger] Preview ledger ingestion complete (no writes performed).');
+                return {
+                    preview: {
+                        runStartedAt,
+                        counts: stats,
+                        seenUrls: seenUrls.size,
+                        staleUrls,
+                    },
+                };
+            }
+
+            const chunksToEmbed = pagePlans.flatMap(plan => plan.chunkInfos || []);
+            const batchSize = 32;
+            const totalBatches = Math.ceil(chunksToEmbed.length / batchSize);
+            const embeddedUrls = new Set();
+            const nowForChunks = nowIso();
+
+            if (chunksToEmbed.length === 0) {
+                console.log('[mongo-ledger] No chunks require embedding this run.');
+            } else {
+                console.log(`[mongo-ledger] Embedding ${chunksToEmbed.length} chunks across ${totalBatches} batches (batchSize=${batchSize}).`);
+            }
+
+            for (let i = 0; i < chunksToEmbed.length; i += batchSize) {
+                const batch = chunksToEmbed.slice(i, i + batchSize);
+                if (batch.length === 0) continue;
+
+                const batchIndex = Math.floor(i / batchSize);
+                console.log(`[mongo-ledger] Upserting batch ${batchIndex + 1}/${totalBatches} (size=${batch.length}).`);
+
+                const embeddings = await this.embeddings.embedDocuments(batch.map(chunk => chunk.text));
+                const vectors = batch.map((chunk, index) => ({
+                    id: chunk.chunkId,
+                    values: embeddings[index],
+                    metadata: {
+                        text: chunk.text.substring(0, 1000),
+                        ...chunk.metadata,
+                    },
+                }));
+
+                let upsertSucceeded = false;
+                try {
+                    await this.index.upsert(vectors);
+                    upsertSucceeded = true;
+                } catch (error) {
+                    console.error('[mongo-ledger] Pinecone upsert failed:', error?.message || error);
+                }
+
+                if (upsertSucceeded) {
+                    console.log(`[mongo-ledger] Batch ${batchIndex + 1}/${totalBatches} stored successfully.`);
+                    const bulkOps = batch.map(chunk => ({
+                        updateOne: {
+                            filter: { chunkId: chunk.chunkId },
+                            update: {
+                                $set: {
+                                    url: chunk.url,
+                                    index: chunk.index,
+                                    textHash: chunk.textHash,
+                                    pineconeId: chunk.chunkId,
+                                    storedAt: nowForChunks,
+                                    metadataSnapshot: {
+                                        source: chunk.metadata.source,
+                                        sourceType: chunk.metadata.sourceType,
+                                        title: chunk.metadata.title,
+                                        category: chunk.metadata.category,
+                                        chunkIndex: chunk.metadata.chunkIndex,
+                                        totalChunks: chunk.metadata.totalChunks,
+                                    },
+                                },
+                            },
+                            upsert: true,
+                        },
+                    }));
+
+                    if (bulkOps.length) {
+                        await this.chunksColl.bulkWrite(bulkOps, { ordered: false });
+                    }
+                    batch.forEach(chunk => embeddedUrls.add(chunk.url));
+                }
+            }
+
+            let deleteIds = pagePlans.flatMap(plan => plan.toDeleteIds || []);
+            deleteIds = [...new Set(deleteIds)];
+            if (deleteIds.length === 0) {
+                console.log('[mongo-ledger] No unique IDs to delete.');
+            } else {
+                console.log(`[mongo-ledger] Deleting ${deleteIds.length} chunk vectors marked stale during ingestion.`);
+                try {
+                    const stats = await this.index.describeIndexStats();
+                    const totalVectors = stats?.totalVectorCount || 0;
+                    if (totalVectors === 0) {
+                        console.log('[mongo-ledger] Skipping deletes: Pinecone index is empty or fresh.');
+                    } else {
+                        const BATCH_SIZE = 500;
+                        for (let i = 0; i < deleteIds.length; i += BATCH_SIZE) {
+                            const batch = deleteIds.slice(i, i + BATCH_SIZE);
+                            await this.index.deleteMany({ ids: batch });
+                        }
+                    }
+                } catch (error) {
+                    console.warn('[mongo-ledger] Pinecone delete failed:', error?.message || error);
+                }
+                try {
+                    await this.chunksColl.deleteMany({ chunkId: { $in: deleteIds } });
+                } catch (error) {
+                    console.warn('[mongo-ledger] Mongo chunk delete failed:', error?.message || error);
+                }
+            }
+
+            const pageUpdateTime = nowIso();
+            for (const plan of pagePlans) {
+                const versionBase = plan.existingPage?.version || 0;
+                const removedChunks = (plan.toDeleteIds?.length || 0) > 0;
+                const changedWithoutEmbed = plan.status === 'MODIFIED' && removedChunks && !embeddedUrls.has(plan.url);
+                const shouldBumpVersion = embeddedUrls.has(plan.url) || plan.status === 'NEW' || changedWithoutEmbed;
+                const updateDoc = {
+                    url: plan.url,
+                    type: plan.type,
+                    title: plan.title,
+                    category: plan.category,
+                    wordCount: plan.wordCount,
+                    contentHash: plan.contentHash,
+                    chunkCount: plan.chunkCount ?? plan.existingPage?.chunkCount ?? 0,
+                    lastSeenAt: runStartedAt,
+                    deleted: false,
+                    version: shouldBumpVersion ? versionBase + 1 : versionBase,
+                };
+
+                if (embeddedUrls.has(plan.url) || changedWithoutEmbed) {
+                    updateDoc.lastEmbeddedAt = pageUpdateTime;
+                } else if (plan.existingPage?.lastEmbeddedAt) {
+                    updateDoc.lastEmbeddedAt = plan.existingPage.lastEmbeddedAt;
+                }
+
+                await this.pagesColl.updateOne(
+                    { url: plan.url },
+                    { $set: updateDoc },
+                    { upsert: true }
+                );
+            }
+
+            if (stats.pages.deletedCandidate > 0) {
+                let staleChunkIds = [];
+                try {
+                    const staleChunkDocs = await this.chunksColl.find(
+                        { url: { $in: staleUrls } },
+                        { projection: { chunkId: 1 } }
+                    ).toArray();
+                    staleChunkIds = staleChunkDocs.map(doc => doc.chunkId);
+                } catch (error) {
+                    console.warn('[mongo-ledger] failed to list stale chunks:', error?.message || error);
+                }
+
+                if (staleChunkIds.length) {
+                    staleChunkIds = [...new Set(staleChunkIds)];
+                    if (staleChunkIds.length === 0) {
+                        console.log('[mongo-ledger] No unique IDs to delete.');
+                    } else {
+                        console.log(`[mongo-ledger] Deleting ${staleChunkIds.length} chunk vectors from stale pages.`);
+                        try {
+                            const stats = await this.index.describeIndexStats();
+                            const totalVectors = stats?.totalVectorCount || 0;
+                            if (totalVectors === 0) {
+                                console.log('[mongo-ledger] Skipping deletes: Pinecone index is empty or fresh.');
+                            } else {
+                                const BATCH_SIZE = 500;
+                                for (let i = 0; i < staleChunkIds.length; i += BATCH_SIZE) {
+                                    const batch = staleChunkIds.slice(i, i + BATCH_SIZE);
+                                    await this.index.deleteMany({ ids: batch });
+                                }
+                            }
+                        } catch (error) {
+                            console.warn('[mongo-ledger] Pinecone delete (stale) failed:', error?.message || error);
+                        }
+                        try {
+                            await this.chunksColl.deleteMany({ chunkId: { $in: staleChunkIds } });
+                        } catch (error) {
+                            console.warn('[mongo-ledger] Mongo delete (stale chunks) failed:', error?.message || error);
+                        }
+                    }
+                }
+
+                try {
+                    await this.pagesColl.updateMany(
+                        { url: { $in: staleUrls } },
+                        { $set: { deleted: true, lastSeenAt: runStartedAt } }
+                    );
+                } catch (error) {
+                    console.warn('[mongo-ledger] failed to mark stale pages as deleted:', error?.message || error);
+                }
+            }
+
+            const durationMs = Date.now() - runStartTimestamp;
+            console.log(`[mongo-ledger] Ledger ingestion completed in ${durationMs} ms. Pages seen=${seenUrls.size}, embedded=${embeddedUrls.size}, deletes=${stats.chunks.toDelete}.`);
+
+            return {
+                success: true,
+                ledger: true,
+                runStartedAt,
+                stats,
+            };
+        } catch (error) {
+            console.error('[mongo-ledger] ingestion error:', error?.message || error);
+            if (!preview) {
+                console.warn('[mongo-ledger] Falling back to legacy ingestion path.');
+                return this.legacyProcessAndStoreDocuments(scrapedData);
+            }
+            throw error;
+        }
+    }
+
+    async processAndStoreDocuments(scrapedData, options = {}) {
+        if (options?.preview) {
+            return this.previewIngestion(scrapedData);
+        }
+        return this._ingestWithLedger(scrapedData, { preview: false });
+    }
+
+    async previewIngestion(scrapedData) {
+        const result = await this._ingestWithLedger(scrapedData, { preview: true });
+        return result.preview;
     }
 
     findRelevantLinks(question, documents) {
