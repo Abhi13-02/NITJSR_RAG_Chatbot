@@ -36,6 +36,7 @@
     "dotenv": "^16.6.1",
     "express": "^4.18.2",
     "ioredis": "^5.8.1",
+    "mongodb": "^6.9.0",
     "lru-cache": "^11.2.2"
   },
   "optionalDependencies": {
