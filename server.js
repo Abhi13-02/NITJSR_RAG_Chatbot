@@ -40,8 +40,8 @@ class NITJSRServer {
       console.log(`[ResponseCache] initialized backend=${rc.backend} ttlSeconds=${rc.ttlSeconds} bits=${rc.lshBits} radius=${rc.hammingRadius} threshold=${rc.threshold} modelKey=${rc.modelKey}`);
     } catch (_) {}
     this.scraper = new NITJSRScraper({
-      maxPages: 6,
-      maxDepth: 3,
+      maxPages: 1,
+      maxDepth: 10,
       delay: 1500,
     });
     this.isInitialized = false;
@@ -351,6 +351,75 @@ class NITJSRServer {
         });
       } catch (error) {
         console.error('Scrape error:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Combined scrape and embed endpoint
+    this.app.post('/scrape-and-embed', async (req, res) => {
+      try {
+        const { force = false } = req.body || {};
+
+        console.log('[scrape-and-embed] Starting combined scrape + embed...');
+        const scrapeResult = await this.scraper.scrapeComprehensive();
+        console.log('[scrape-and-embed] Scrape completed:', scrapeResult?.summary || 'No summary available');
+
+        const scrapedData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
+
+        // Build a brief summary for logs/response
+        const brief = {
+          pagesScraped: scrapedData.pages?.length || 0,
+          pdfsProcessed: scrapedData.documents?.pdfs?.length || 0,
+          totalLinks: scrapedData.statistics?.totalLinks || 0,
+          pdfLinks: scrapedData.links?.pdf?.length || 0,
+          internalLinks: scrapedData.links?.internal?.length || 0,
+          categories: Object.keys(scrapedData.categories || {}).map((cat) => ({
+            name: cat,
+            count: scrapedData.categories[cat]?.length || 0,
+          })),
+          timestamp: scrapedData.metadata?.timestamp || new Date().toISOString(),
+          scrapeType: scrapedData.metadata?.scrapeType || 'unknown',
+          filename: path.basename(scrapeResult.filepath),
+        };
+        console.log('[scrape-and-embed] Summary:', {
+          pagesScraped: brief.pagesScraped,
+          pdfsProcessed: brief.pdfsProcessed,
+          totalLinks: brief.totalLinks,
+          categories: brief.categories?.length || 0,
+          file: brief.filename,
+        });
+
+        if (force) {
+          console.log('[scrape-and-embed] Force flag set — clearing existing vector index...');
+          await this.ragSystem.clearIndex();
+        }
+
+        // await this.ensureMongoConnected();
+        await this.ragSystem.initialize();
+
+        console.log('[scrape-and-embed] Embedding scraped data into vector store...');
+        const embedResult = await this.ragSystem.processAndStoreDocuments(scrapedData);
+        console.log('[scrape-and-embed] Embedding completed:', embedResult?.stats || 'No stats available');
+
+        this.isInitialized = true;
+
+        res.json({
+          success: true,
+          message: 'Comprehensive data scraped and embedded successfully',
+          timestamp: new Date().toISOString(),
+          aiProvider: 'Google Gemini',
+          scrape: {
+            summary: scrapeResult.summary,
+            brief,
+          },
+          embed: {
+            runStartedAt: embedResult?.runStartedAt || null,
+            stats: embedResult?.stats || null,
+            ledger: Boolean(embedResult?.ledger),
+          },
+        });
+      } catch (error) {
+        console.error('[scrape-and-embed] Error:', error);
         res.status(500).json({ success: false, error: error.message });
       }
     });
