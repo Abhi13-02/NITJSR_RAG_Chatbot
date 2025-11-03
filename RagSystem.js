@@ -233,7 +233,8 @@ class NITJSRRAGSystem {
                 title: pdf.title,
                 pages: pdf.pages,
                 category: pdf.category,
-                sourceUrl: pdf.sourceUrl,
+                sourceUrl: pdf.parentPageUrl,
+                sourceTitle: pdf.parentPageTitle,
                 wordCount: pdf.wordCount
             });
         });
@@ -304,7 +305,7 @@ class NITJSRRAGSystem {
                 `URL: ${pdf.url}`,
                 `Category: ${pdf.category || 'general'}`,
                 `Pages: ${pdf.pages}`,
-                `Source Page: ${pdf.sourceTitle || 'Unknown'}`,
+                `Source Page: ${pdf.parentPageTitle || 'Unknown'}`,
                 `Content: ${pdfContent}`
             ].filter(Boolean).join('\n\n');
 
@@ -316,8 +317,8 @@ class NITJSRRAGSystem {
                 pages: pdf.pages,
                 timestamp: pdf.timestamp,
                 category: pdf.category || 'general',
-                sourceUrl: pdf.sourceUrl,
-                sourceTitle: pdf.sourceTitle,
+                sourceUrl: pdf.parentPageUrl,
+                sourceTitle: pdf.parentPageTitle,
                 wordCount: pdf.wordCount || countWords(structuredPdfText),
             };
 
@@ -378,15 +379,24 @@ class NITJSRRAGSystem {
             }
         }
 
+        const categoryCounts = (scrapedData.pages || []).reduce((acc, page) => {
+            const key = page.category || 'general';
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {});
+        const buildCategoryLines = (counts, bullet) => {
+            const entries = Object.entries(counts);
+            if (!entries.length) return `${bullet} general: 0 pages`;
+            return entries.map(([cat, count]) => `${bullet} ${cat}: ${count} pages`).join('\n');
+        };
+
         const statsContent = [
             `NIT Jamshedpur Website Statistics and Overview:`,
             `Total Pages Scraped: ${scrapedData.statistics?.totalPages || 0}`,
             `Total PDF Documents: ${scrapedData.statistics?.totalPDFs || 0}`,
             `Total Links Found: ${scrapedData.statistics?.totalLinks || 0}`,
             `Categories Breakdown:`,
-            Object.entries(scrapedData.categories || {}).map(([cat, items]) =>
-                `- ${cat}: ${items.length} pages`
-            ).join('\n'),
+            buildCategoryLines(categoryCounts, '-'),
             `\nAvailable PDF Documents:`,
             scrapedData.documents?.pdfs?.map(pdf =>
                 `- ${pdf.title} (${pdf.pages} pages, ${pdf.wordCount} words) - ${pdf.category}`
@@ -497,7 +507,7 @@ class NITJSRRAGSystem {
                         `URL: ${pdf.url}`,
                         `Category: ${pdf.category || 'general'}`,
                         `Pages: ${pdf.pages}`,
-                        `Source Page: ${pdf.sourceTitle || 'Unknown'}`,
+                        `Source Page: ${pdf.parentPageTitle || 'Unknown'}`,
                         `Content: ${pdfContent}`
                     ].filter(Boolean).join('\n\n');
 
@@ -515,8 +525,8 @@ class NITJSRRAGSystem {
                                 pages: pdf.pages,
                                 timestamp: pdf.timestamp,
                                 category: pdf.category || 'general',
-                                sourceUrl: pdf.sourceUrl,
-                                sourceTitle: pdf.sourceTitle,
+                                sourceUrl: pdf.parentPageUrl,
+                                sourceTitle: pdf.parentPageTitle,
                                 wordCount: pdf.wordCount,
                                 chunkIndex: i,
                                 totalChunks: chunks.length
@@ -563,9 +573,7 @@ class NITJSRRAGSystem {
                 `Total PDF Documents: ${scrapedData.statistics?.totalPDFs || 0}`,
                 `Total Links Found: ${scrapedData.statistics?.totalLinks || 0}`,
                 `Categories Breakdown:`,
-                Object.entries(scrapedData.categories || {}).map(([cat, items]) => 
-                    `• ${cat}: ${items.length} pages`
-                ).join('\n'),
+                buildCategoryLines(categoryCounts, '•'),
                 `\nAvailable PDF Documents:`,
                 scrapedData.documents?.pdfs?.map(pdf => 
                     `• ${pdf.title} (${pdf.pages} pages, ${pdf.wordCount} words) - ${pdf.category}`

@@ -2,12 +2,19 @@ import 'dotenv/config';
 import { NITJSRScraper } from '../scraper.js';
 
 function parseArgs(argv) {
-  const args = { maxPages: 9, maxDepth: 4, delay: 1500 };
+  const args = { maxPages: 2, maxDepth: 4, delay: 1500 };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--maxPages' && argv[i + 1]) args.maxPages = Number(argv[++i]);
     else if (a === '--maxDepth' && argv[i + 1]) args.maxDepth = Number(argv[++i]);
     else if (a === '--delay' && argv[i + 1]) args.delay = Number(argv[++i]);
+    else if (a === '--priority' && argv[i + 1]) {
+      const list = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length) args.priorityUrls = list;
+    } else if (a === '--exclude' && argv[i + 1]) {
+      const list = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length) args.excludeUrls = list;
+    }
   }
   return args;
 }

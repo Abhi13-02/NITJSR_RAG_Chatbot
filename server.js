@@ -16,6 +16,15 @@ import { NITJSRScraper } from './scraper.js';
 import { NITJSRRAGSystem } from './RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
 
+const summarizePageCategories = (pages = []) => {
+  const counts = pages.reduce((acc, page) => {
+    const key = page?.category || 'general';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  return Object.entries(counts).map(([name, count]) => ({ name, count }));
+};
+
 class NITJSRServer {
   constructor() {
     this.app = express();
@@ -40,8 +49,8 @@ class NITJSRServer {
       console.log(`[ResponseCache] initialized backend=${rc.backend} ttlSeconds=${rc.ttlSeconds} bits=${rc.lshBits} radius=${rc.hammingRadius} threshold=${rc.threshold} modelKey=${rc.modelKey}`);
     } catch (_) {}
     this.scraper = new NITJSRScraper({
-      maxPages: 1,
-      maxDepth: 10,
+      maxPages: 4,
+      maxDepth: 3,
       delay: 1500,
     });
     this.isInitialized = false;
@@ -373,10 +382,7 @@ class NITJSRServer {
           totalLinks: scrapedData.statistics?.totalLinks || 0,
           pdfLinks: scrapedData.links?.pdf?.length || 0,
           internalLinks: scrapedData.links?.internal?.length || 0,
-          categories: Object.keys(scrapedData.categories || {}).map((cat) => ({
-            name: cat,
-            count: scrapedData.categories[cat]?.length || 0,
-          })),
+          categories: summarizePageCategories(scrapedData.pages || []),
           timestamp: scrapedData.metadata?.timestamp || new Date().toISOString(),
           scrapeType: scrapedData.metadata?.scrapeType || 'unknown',
           filename: path.basename(scrapeResult.filepath),
@@ -542,10 +548,7 @@ class NITJSRServer {
               totalLinks: data.statistics?.totalLinks || 0,
               pdfLinks: data.links?.pdf?.length || 0,
               internalLinks: data.links?.internal?.length || 0,
-              categories: Object.keys(data.categories || {}).map((cat) => ({
-                name: cat,
-                count: data.categories[cat]?.length || 0,
-              })),
+              categories: summarizePageCategories(data.pages || []),
               version: data.metadata?.scrapeType || 'unknown',
             });
           } catch (error) {
