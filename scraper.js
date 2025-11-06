@@ -21,8 +21,9 @@ class NITJSRScraper {
         this.maxDepth = options.maxDepth || 3;   // Deeper crawling
         this.delay = options.delay || 1500;
         this.baseUrl = 'https://nitjsr.ac.in';
-        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://nitjsr.ac.in/Tender/Active_Tenders'];
+        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://www.nitjsr.ac.in/Notices/Archive_Notices'];
         this.priorityQueue = [];
+        this.pageXHRCache = new Map();
         this.excludeUrls = new Set(['https://nitjsr.ac.in']);
         if (Array.isArray(options.excludeUrls)) {
             options.excludeUrls.forEach(raw => {
@@ -209,8 +210,15 @@ class NITJSRScraper {
 
     isExcluded(url) {
         const key = this.normalizeForComparison(url);
-        return key ? this.excludeUrls.has(key) : false;
+        if (!key) return false;
+
+        // check exact match or same with trailing slash
+        if (this.excludeUrls.has(key)) return true;
+        if (this.excludeUrls.has(key.endsWith('/') ? key.slice(0, -1) : key + '/')) return true;
+
+        return false;
     }
+
 
     // --- NEW: Sitemap loader (minimal changes, no external deps) ---
     async loadSitemapUrls() {
@@ -299,6 +307,14 @@ class NITJSRScraper {
     capturePageXHR(page, pageUrl, pageMeta = { title: '' }) {
         const ignorePatterns = ['translation.json', 'frontendlive', 'trigger-count', '/locales/', '/i18n'];
         const processedResponses = new Set();
+        const cacheKey = this.normalizeForComparison(pageUrl) || pageUrl;
+        this.pageXHRCache.set(cacheKey, []);
+        const getPageXHRStore = () => {
+            if (!this.pageXHRCache.has(cacheKey)) {
+                this.pageXHRCache.set(cacheKey, []);
+            }
+            return this.pageXHRCache.get(cacheKey);
+        };
         const addPdfFromItem = (item) => {
             if (!item || typeof item !== 'object') return;
             const candidateFields = ['link', 'url', 'file', 'document'];
@@ -428,6 +444,17 @@ class NITJSRScraper {
                     return;
                 }
 
+                if (!jsonData || (typeof jsonData !== 'object' && !Array.isArray(jsonData))) {
+                    return;
+                }
+
+                getPageXHRStore().push({
+                    url: request.url(),
+                    status: response.status(),
+                    timestamp: new Date().toISOString(),
+                    data: jsonData
+                });
+
                 if (Array.isArray(jsonData)) {
                     processItems(jsonData);
                     return;
@@ -465,6 +492,7 @@ class NITJSRScraper {
 
         const pageMeta = { title: '' };
         let detachXHR = this.capturePageXHR(this.page, url, pageMeta);
+        let latestResolvedKey = null;
 
         try {
             await this.page.goto(url, { 
@@ -477,45 +505,99 @@ class NITJSRScraper {
 
             pageMeta.title = (await this.page.title().catch(() => '')) || '';
 
+            // collect ALL table pages into here
+            const allTableRows = []; // array of { headers, rows } we will merge later
+
+            // helper to read the current table in the DOM
+            const grabCurrentTable = async () => {
+                const tableData = await this.page.evaluate(() => {
+                    const table = document.querySelector('table');
+                    if (!table) return null;
+
+                    const headers = Array.from(table.querySelectorAll('thead th')).map(th =>
+                        (th.textContent || '').trim()
+                    );
+
+                    const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr => {
+                        return Array.from(tr.querySelectorAll('td,th')).map(td =>
+                            (td.textContent || '').trim()
+                        );
+                    });
+
+                    return { headers, rows };
+                });
+                if (tableData && tableData.rows && tableData.rows.length) {
+                    allTableRows.push(tableData);
+                }
+            };
+
             // Attempt to expand client-side pagination before extraction
             const expandClientPagination = async () => {
-                const maxIterations = 20;
+                const maxIterations = 25;
+
+                // grab the very first page BEFORE clicking anything
+                await grabCurrentTable();
+
                 for (let i = 0; i < maxIterations; i++) {
-                    const hasMore = await this.page.evaluate(() => {
-                        const candidates = Array.from(document.querySelectorAll(
+                    const clicked = await this.page.evaluate(() => {
+                        // 1. legacy selectors
+                        const legacyCandidates = Array.from(document.querySelectorAll(
                             '.pagination li a, .paginate_button, .dataTables_paginate a, .page-link'
                         ));
 
-                        const findNextButton = () => {
-                            for (const el of candidates) {
-                                const text = el.textContent.trim().toLowerCase();
-                                const isDisabled = el.parentElement?.classList.contains('disabled') ||
+                        const findClickableNext = (els) => {
+                            for (const el of els) {
+                                const text = (el.textContent || '').trim().toLowerCase();
+                                const disabled =
+                                    el.closest('.disabled') ||
                                     el.classList.contains('disabled') ||
                                     el.getAttribute('aria-disabled') === 'true';
-                                if (isDisabled) continue;
-                                if (['next', '>', '\u00bb', '\u203a'].includes(text) || el.classList.contains('next') || el.rel === 'next') {
+                                if (disabled) continue;
+                                if (
+                                    text === 'next' ||
+                                    text === '>' ||
+                                    text === '»' ||
+                                    el.classList.contains('next') ||
+                                    el.rel === 'next'
+                                ) {
                                     return el;
                                 }
                             }
                             return null;
                         };
 
-                        const nextButton = findNextButton();
-                        if (!nextButton) return false;
+                        // 2. Material UI buttons
+                        const muiNext =
+                            document.querySelector('button[aria-label="Go to next page"]:not([disabled])') ||
+                            document.querySelector('button[title="Next page"]:not([disabled])') ||
+                            null;
 
-                        nextButton.click();
+                        const legacyNext = findClickableNext(legacyCandidates);
+                        const target = legacyNext || muiNext;
+                        if (!target) return false;
+
+                        target.click();
                         return true;
                     }).catch(() => false);
 
-                    if (!hasMore) break;
-                    await this.page.waitForTimeout(Math.max(200, this.delay || 500));
+                    if (!clicked) break;
+
+                    // wait for table to update + XHR to finish
+                    await this.page.waitForTimeout(500);
+
+                    // grab the table for THIS page too
+                    await grabCurrentTable();
                 }
+
+                // return merged table data so scrapePage can use it
+                return allTableRows;
             };
 
+            let collectedTables = [];
             try {
-                await expandClientPagination();
+                collectedTables = await expandClientPagination();
             } catch {
-                // Ignore pagination expansion failures
+                collectedTables = allTableRows;
             }
 
             // Try to load more content by scrolling
@@ -655,6 +737,64 @@ class NITJSRScraper {
             }
 
             const currentSourceTitle = pageMeta.title;
+            const extractedTables = Array.isArray(pageData.tables) ? pageData.tables : [];
+            const mergeTables = (chunks) => {
+                if (!Array.isArray(chunks) || !chunks.length) return [];
+                const firstWithRows = chunks.find(chunk => Array.isArray(chunk?.rows) && chunk.rows.length) || chunks[0];
+                const merged = {
+                    headers: Array.isArray(firstWithRows?.headers) ? firstWithRows.headers : [],
+                    rows: []
+                };
+                chunks.forEach(chunk => {
+                    if (!chunk || typeof chunk !== 'object') return;
+                    const rows = Array.isArray(chunk.rows) ? chunk.rows : [];
+                    rows.forEach(row => {
+                        if (Array.isArray(row)) {
+                            merged.rows.push(row);
+                        }
+                    });
+                });
+                if (!merged.rows.length && !merged.headers.length) {
+                    return [];
+                }
+                return [merged];
+            };
+            const mergedPaginatedTables = (Array.isArray(collectedTables) && collectedTables.length) ? mergeTables(collectedTables) : [];
+            const resolvedTables = (mergedPaginatedTables && mergedPaginatedTables.length) ? mergedPaginatedTables : extractedTables;
+            pageData.tables = resolvedTables;
+
+            const tableTextContent = (() => {
+                if (!Array.isArray(resolvedTables)) return [];
+                const lines = [];
+                resolvedTables.forEach(table => {
+                    if (!table) return;
+                    if (Array.isArray(table)) {
+                        table.forEach(row => {
+                            if (Array.isArray(row)) {
+                                lines.push(row.join(' '));
+                            } else if (row) {
+                                lines.push(String(row));
+                            }
+                        });
+                        return;
+                    }
+                    if (typeof table === 'object') {
+                        if (Array.isArray(table.headers) && table.headers.length) {
+                            lines.push(table.headers.join(' '));
+                        }
+                        if (Array.isArray(table.rows)) {
+                            table.rows.forEach(row => {
+                                if (Array.isArray(row)) {
+                                    lines.push(row.join(' '));
+                                } else if (row) {
+                                    lines.push(String(row));
+                                }
+                            });
+                        }
+                    }
+                });
+                return lines;
+            })();
 
             const cleanedLinks = [];
             const seenLinks = new Set();
@@ -686,11 +826,38 @@ class NITJSRScraper {
                 pageData.title,
                 ...pageData.headings.map(h => h.text),
                 ...pageData.content,
-                ...pageData.tables.flat().flat(),
+                ...tableTextContent,
                 ...pageData.lists.flat(),
                 pageData.metadata.description,
                 pageData.metadata.keywords
             ].filter(Boolean).join(' ');
+
+            const cacheKey = this.normalizeForComparison(url) || url;
+            const resolvedUrl = this.page.url();
+            const resolvedKey = this.normalizeForComparison(resolvedUrl) || resolvedUrl;
+            latestResolvedKey = resolvedKey;
+            const xhrEntries = [];
+            const seenXhr = new Set();
+            const collectXhrFromKey = (key) => {
+                if (!key) return;
+                const bucket = this.pageXHRCache.get(key);
+                if (!bucket || !Array.isArray(bucket)) return;
+                bucket.forEach(entry => {
+                    if (!entry || typeof entry !== 'object') return;
+                    const signature = `${entry.url || ''}|${entry.timestamp || ''}`;
+                    if (seenXhr.has(signature)) return;
+                    seenXhr.add(signature);
+                    xhrEntries.push(entry);
+                });
+            };
+            collectXhrFromKey(cacheKey);
+            if (resolvedKey && resolvedKey !== cacheKey) {
+                collectXhrFromKey(resolvedKey);
+            }
+            this.pageXHRCache.set(cacheKey, xhrEntries);
+            if (resolvedKey && resolvedKey !== cacheKey) {
+                this.pageXHRCache.set(resolvedKey, xhrEntries);
+            }
 
             const processedPage = {
                 url: url,
@@ -700,15 +867,17 @@ class NITJSRScraper {
                 headings: pageData.headings,
                 content: allContent,
                 rawContent: pageData.content,
-                tables: pageData.tables,
+                tables: (mergedPaginatedTables && mergedPaginatedTables.length) ? mergedPaginatedTables : extractedTables,
                 lists: pageData.lists,
                 links: pageData.links,
                 metadata: pageData.metadata,
+                xhrResponses: xhrEntries,
                 category: this.categorizeUrl(url, allContent),
                 wordCount: allContent.split(' ').length
             };
 
             this.scrapedData.pages.push(processedPage);
+            console.log(`Page ${processedPage.url} -> ${processedPage.xhrResponses.length} XHR responses captured`);
 
             pageData.links.forEach(link => {
                 try {
@@ -753,6 +922,13 @@ class NITJSRScraper {
         } finally {
             if (detachXHR) {
                 detachXHR();
+            }
+            const cleanupKey = this.normalizeForComparison(url) || url;
+            if (cleanupKey) {
+                this.pageXHRCache.delete(cleanupKey);
+            }
+            if (latestResolvedKey && latestResolvedKey !== cleanupKey) {
+                this.pageXHRCache.delete(latestResolvedKey);
             }
         }
     }

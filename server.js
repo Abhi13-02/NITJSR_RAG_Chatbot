@@ -430,6 +430,47 @@ class NITJSRServer {
       }
     });
 
+    // Admin: reset vector store (Pinecone) + Mongo collections
+    this.app.post('/reset-storage', async (req, res) => {
+      try {
+        // make sure RAG system is ready so clearIndex() has an index
+        await this.ragSystem.initialize();
+
+        console.log('[reset-storage] Clearing Pinecone index...');
+        await this.ragSystem.clearIndex(); // this calls index.deleteAll() and clears link DB
+        console.log('[reset-storage] Pinecone cleared.');
+
+        // clear Mongo, if connected
+        const mongoReady = await this.ensureMongoConnected();
+        if (mongoReady && this.mongo.pagesColl && this.mongo.chunksColl) {
+          console.log('[reset-storage] Clearing Mongo pages/chunks...');
+          await this.mongo.pagesColl.deleteMany({});
+          await this.mongo.chunksColl.deleteMany({});
+          console.log('[reset-storage] Mongo collections cleared.');
+        }
+
+        // since we just wiped everything, mark server as not initialized
+        this.isInitialized = false;
+
+        // optionally clear response cache if the class has it
+        if (this.responseCache && typeof this.responseCache.clear === 'function') {
+          this.responseCache.clear();
+        }
+
+        res.json({
+          success: true,
+          message: 'Pinecone index and Mongo collections cleared. You can now scrape/embed fresh.',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[reset-storage] Failed:', error);
+        res.status(500).json({
+          success: false,
+          error: error?.message || 'Failed to reset storage',
+        });
+      }
+    });
+
     // Get system statistics
     this.app.get('/stats', async (req, res) => {
       try {
