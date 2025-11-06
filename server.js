@@ -16,6 +16,15 @@ import { NITJSRScraper } from './scraper.js';
 import { NITJSRRAGSystem } from './RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
 
+const summarizePageCategories = (pages = []) => {
+  const counts = pages.reduce((acc, page) => {
+    const key = page?.category || 'general';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  return Object.entries(counts).map(([name, count]) => ({ name, count }));
+};
+
 class NITJSRServer {
   constructor() {
     this.app = express();
@@ -40,8 +49,8 @@ class NITJSRServer {
       console.log(`[ResponseCache] initialized backend=${rc.backend} ttlSeconds=${rc.ttlSeconds} bits=${rc.lshBits} radius=${rc.hammingRadius} threshold=${rc.threshold} modelKey=${rc.modelKey}`);
     } catch (_) {}
     this.scraper = new NITJSRScraper({
-      maxPages: 1,
-      maxDepth: 10,
+      maxPages: 4,
+      maxDepth: 3,
       delay: 1500,
     });
     this.isInitialized = false;
@@ -373,10 +382,7 @@ class NITJSRServer {
           totalLinks: scrapedData.statistics?.totalLinks || 0,
           pdfLinks: scrapedData.links?.pdf?.length || 0,
           internalLinks: scrapedData.links?.internal?.length || 0,
-          categories: Object.keys(scrapedData.categories || {}).map((cat) => ({
-            name: cat,
-            count: scrapedData.categories[cat]?.length || 0,
-          })),
+          categories: summarizePageCategories(scrapedData.pages || []),
           timestamp: scrapedData.metadata?.timestamp || new Date().toISOString(),
           scrapeType: scrapedData.metadata?.scrapeType || 'unknown',
           filename: path.basename(scrapeResult.filepath),
@@ -421,6 +427,47 @@ class NITJSRServer {
       } catch (error) {
         console.error('[scrape-and-embed] Error:', error);
         res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Admin: reset vector store (Pinecone) + Mongo collections
+    this.app.post('/reset-storage', async (req, res) => {
+      try {
+        // make sure RAG system is ready so clearIndex() has an index
+        await this.ragSystem.initialize();
+
+        console.log('[reset-storage] Clearing Pinecone index...');
+        await this.ragSystem.clearIndex(); // this calls index.deleteAll() and clears link DB
+        console.log('[reset-storage] Pinecone cleared.');
+
+        // clear Mongo, if connected
+        const mongoReady = await this.ensureMongoConnected();
+        if (mongoReady && this.mongo.pagesColl && this.mongo.chunksColl) {
+          console.log('[reset-storage] Clearing Mongo pages/chunks...');
+          await this.mongo.pagesColl.deleteMany({});
+          await this.mongo.chunksColl.deleteMany({});
+          console.log('[reset-storage] Mongo collections cleared.');
+        }
+
+        // since we just wiped everything, mark server as not initialized
+        this.isInitialized = false;
+
+        // optionally clear response cache if the class has it
+        if (this.responseCache && typeof this.responseCache.clear === 'function') {
+          this.responseCache.clear();
+        }
+
+        res.json({
+          success: true,
+          message: 'Pinecone index and Mongo collections cleared. You can now scrape/embed fresh.',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('[reset-storage] Failed:', error);
+        res.status(500).json({
+          success: false,
+          error: error?.message || 'Failed to reset storage',
+        });
       }
     });
 
@@ -542,10 +589,7 @@ class NITJSRServer {
               totalLinks: data.statistics?.totalLinks || 0,
               pdfLinks: data.links?.pdf?.length || 0,
               internalLinks: data.links?.internal?.length || 0,
-              categories: Object.keys(data.categories || {}).map((cat) => ({
-                name: cat,
-                count: data.categories[cat]?.length || 0,
-              })),
+              categories: summarizePageCategories(data.pages || []),
               version: data.metadata?.scrapeType || 'unknown',
             });
           } catch (error) {

@@ -27,13 +27,12 @@ async function testScraper() {
         console.log('📂 Data saved to:', result.summary.filepath);
 
         console.log('\n📚 Categories Breakdown:');
-        if (result.summary.categoriesBreakdown) {
-            result.summary.categoriesBreakdown.forEach(cat => {
-                if (cat.count > 0) {
-                    console.log(`   - ${cat.name}: ${cat.count} pages`);
-                }
-            });
-        }
+        const categoriesSummary = result.summary.categories || [];
+        categoriesSummary.forEach(cat => {
+            if (cat.count > 0) {
+                console.log(`   - ${cat.name}: ${cat.count} pages`);
+            }
+        });
 
         if (result.data.pages && result.data.pages.length > 0) {
             console.log('\n📋 Scraped Pages Details:');

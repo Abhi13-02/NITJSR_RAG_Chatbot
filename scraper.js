@@ -5,6 +5,7 @@ import { dirname } from 'path';
 import puppeteer from 'puppeteer';
 import axios from 'axios';
 import pdfParse from 'pdf-parse';
+import zlib from 'zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,10 +17,26 @@ class NITJSRScraper {
         this.visited = new Set();
         this.toVisit = new Set();
         this.pdfUrls = new Set();
-        this.maxPages = options.maxPages || 5; // Increased limit
+        this.maxPages = options.maxPages || 5;   // Increased limit
         this.maxDepth = options.maxDepth || 3;   // Deeper crawling
         this.delay = options.delay || 1500;
         this.baseUrl = 'https://nitjsr.ac.in';
+        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://www.nitjsr.ac.in/Notices/Archive_Notices'];
+        this.priorityQueue = [];
+        this.pageXHRCache = new Map();
+        this.excludeUrls = new Set(['https://nitjsr.ac.in']);
+        if (Array.isArray(options.excludeUrls)) {
+            options.excludeUrls.forEach(raw => {
+                try {
+                    const normalized = this.normalizeUrl(raw);
+                    if (normalized) {
+                        this.excludeUrls.add(normalized.toLowerCase());
+                    }
+                } catch {
+                    // ignore invalid exclude URL
+                }
+            });
+        }
         
         this.scrapedData = {
             metadata: {
@@ -32,28 +49,13 @@ class NITJSRScraper {
             },
             pages: [],
             documents: {
-                pdfs: [],
-                images: [],
-                other: []
+                pdfs: []
             },
             links: {
                 internal: [],
                 external: [],
                 pdf: [],
                 image: []
-            },
-            categories: {
-                academics: [],
-                admissions: [],
-                placements: [],
-                faculty: [],
-                students: [],
-                research: [],
-                administration: [],
-                news: [],
-                events: [],
-                departments: [],
-                general: []
             },
             statistics: {
                 totalPages: 0,
@@ -93,62 +95,73 @@ class NITJSRScraper {
     }
 
     categorizeUrl(url, content = '') {
-        const urlLower = url.toLowerCase();
-        const contentLower = content.toLowerCase();
-        
-        if (urlLower.includes('placement') || contentLower.includes('placement') || 
-            urlLower.includes('career') || contentLower.includes('career') ||
-            urlLower.includes('training') || contentLower.includes('corporate')) {
-            return 'placements';
-        }
-        if (urlLower.includes('admission') || urlLower.includes('apply') || 
-            contentLower.includes('admission') || contentLower.includes('eligibility') ||
-            urlLower.includes('entrance') || urlLower.includes('jee')) {
-            return 'admissions';
-        }
-        if (urlLower.includes('academic') || urlLower.includes('syllabus') || 
-            urlLower.includes('curriculum') || contentLower.includes('academic') ||
-            urlLower.includes('course') || urlLower.includes('program')) {
-            return 'academics';
-        }
-        if (urlLower.includes('faculty') || urlLower.includes('staff') || 
-            contentLower.includes('professor') || contentLower.includes('faculty') ||
-            urlLower.includes('teacher') || urlLower.includes('hod')) {
-            return 'faculty';
-        }
-        if (urlLower.includes('student') || urlLower.includes('hostel') || 
-            contentLower.includes('student life') || urlLower.includes('activity') ||
-            urlLower.includes('club') || urlLower.includes('society')) {
-            return 'students';
-        }
-        if (urlLower.includes('research') || urlLower.includes('publication') || 
-            contentLower.includes('research') || urlLower.includes('phd') ||
-            urlLower.includes('project') || urlLower.includes('innovation')) {
-            return 'research';
-        }
-        if (urlLower.includes('department') || urlLower.includes('dept') || 
-            urlLower.includes('/cse') || urlLower.includes('/ece') || urlLower.includes('/mech') ||
-            urlLower.includes('/eee') || urlLower.includes('/civil') || urlLower.includes('/che') ||
-            urlLower.includes('/mme') || urlLower.includes('/phy') || urlLower.includes('/chem') ||
-            urlLower.includes('/math') || urlLower.includes('/hss')) {
-            return 'departments';
-        }
-        if (urlLower.includes('news') || urlLower.includes('announcement') || 
-            contentLower.includes('news') || urlLower.includes('notice') ||
-            urlLower.includes('tender') || urlLower.includes('recruitment')) {
-            return 'news';
-        }
-        if (urlLower.includes('event') || urlLower.includes('seminar') || 
-            urlLower.includes('workshop') || contentLower.includes('event') ||
-            urlLower.includes('conference') || urlLower.includes('symposium')) {
-            return 'events';
-        }
-        if (urlLower.includes('admin') || urlLower.includes('office') || 
-            urlLower.includes('registrar') || contentLower.includes('administration') ||
-            urlLower.includes('director') || urlLower.includes('dean')) {
-            return 'administration';
-        }
-        
+        // --- Smarter, resilient categorization ---
+        const CATEGORY_SEGMENT_MAP = {
+            institute: 'institute',
+            administration: 'administration',
+            academics: 'academics',
+            academic: 'academics',           // catch singular
+            students: 'students',
+            student: 'students',
+            research: 'research',
+            people: 'people',
+            tender: 'tender',
+            tenders: 'tender',
+            notices: 'notices',
+            notice: 'notices',
+            cells: 'cells',
+            cell: 'cells',
+            facilities: 'facilities',
+            facility: 'facilities',
+            recruitments: 'recruitments',
+            recruitment: 'recruitments',
+            rti: 'rti',
+            'computer-center': 'computer_center',
+            'computer_center': 'computer_center',
+            'central-facilities': 'facilities',
+            'central_facilities': 'facilities'
+        };
+
+        // helper: get first path segment from URL
+        const getFirstSegment = (url) => {
+            try {
+                const u = new URL(url, this.baseUrl || 'https://nitjsr.ac.in');
+                const seg = u.pathname.split('/').filter(Boolean)[0];
+                return seg ? seg.toLowerCase() : '';
+            } catch {
+                return '';
+            }
+        };
+
+        // helper: content-based fallback
+        const guessFromContent = (text = '') => {
+            const checks = [
+                { key: 'academics', rx: /\b(curriculum|syllabus|semester|academic|course|b\.?tech|m\.?tech|ph\.?d)\b/i },
+                { key: 'students', rx: /\b(admission|hostel|scholarship|student|exam|result|anti[-\s]?ragging)\b/i },
+                { key: 'research', rx: /\b(research|publication|project|grant|patent)\b/i },
+                { key: 'recruitments', rx: /\b(recruitment|walk[-\s]?in|faculty|advertisement)\b/i },
+                { key: 'tender', rx: /\b(tender|gem\b|bidding|quotation|procurement)\b/i },
+                { key: 'notices', rx: /\b(notice|notification|announcement|circular)\b/i },
+                { key: 'facilities', rx: /\b(library|laborator(y|ies)|workshop|sports|medical|guest\s*house)\b/i },
+                { key: 'administration', rx: /\b(registrar|dean|administration|establishment|senate)\b/i }
+            ];
+            for (const { key, rx } of checks) if (rx.test(text)) return key;
+            return null;
+        };
+
+        // 1) Try URL-based
+        const seg = getFirstSegment(url);
+        if (CATEGORY_SEGMENT_MAP[seg]) return CATEGORY_SEGMENT_MAP[seg];
+
+        // 2) Try removing plural (academics -> academic)
+        const singular = seg.endsWith('s') ? seg.slice(0, -1) : null;
+        if (singular && CATEGORY_SEGMENT_MAP[singular]) return CATEGORY_SEGMENT_MAP[singular];
+
+        // 3) Fallback on content analysis
+        const fromContent = guessFromContent(content);
+        if (fromContent) return fromContent;
+
+        // 4) Default
         return 'general';
     }
 
@@ -162,36 +175,324 @@ class NITJSRScraper {
             }
             
             // Skip certain file types and external links
-            const skipExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.ico', '.svg', '.woff', '.woff2', '.ttf'];
+            const skipExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.ico', '.svg', '.woff', '.woff2', '.ttf', '.map'];
             const skipPatterns = [
                 'mailto:', 'tel:', 'javascript:', '#',
+                '/assets/', '/static/', '/locales/', '/images/', '/fonts/',
                 'facebook.com', 'twitter.com', 'linkedin.com', 'youtube.com',
                 'google.com', 'maps.google', 'instagram.com'
             ];
             
             const pathname = urlObj.pathname.toLowerCase();
+            const full = url.toLowerCase();
             
-            if (skipExtensions.some(ext => pathname.endsWith(ext))) {
-                return false;
-            }
-            
-            if (skipPatterns.some(pattern => url.toLowerCase().includes(pattern))) {
-                return false;
-            }
+            if (skipExtensions.some(ext => pathname.endsWith(ext))) return false;
+            if (skipPatterns.some(pattern => full.includes(pattern))) return false;
             
             return true;
-        } catch (error) {
+        } catch {
             return false;
         }
     }
 
+    normalizeUrl(url) {
+        try {
+            return new URL(url, this.baseUrl).href;
+        } catch {
+            return null;
+        }
+    }
+
+    normalizeForComparison(url) {
+        const normalized = this.normalizeUrl(url);
+        return normalized ? normalized.toLowerCase() : null;
+    }
+
+    isExcluded(url) {
+        const key = this.normalizeForComparison(url);
+        if (!key) return false;
+
+        // check exact match or same with trailing slash
+        if (this.excludeUrls.has(key)) return true;
+        if (this.excludeUrls.has(key.endsWith('/') ? key.slice(0, -1) : key + '/')) return true;
+
+        return false;
+    }
+
+
+    // --- NEW: Sitemap loader (minimal changes, no external deps) ---
+    async loadSitemapUrls() {
+        const candidates = [
+            `${this.baseUrl.replace(/\/+$/,'')}/sitemap.xml`,
+            `${this.baseUrl.replace(/\/+$/,'')}/sitemap_index.xml`
+        ];
+        const discovered = new Set();
+
+        const fetchXml = async (url) => {
+            try {
+                const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
+                let buf = Buffer.from(res.data);
+                const ct = (res.headers['content-type'] || '').toLowerCase();
+                const ce = (res.headers['content-encoding'] || '').toLowerCase();
+                if (url.endsWith('.gz') || ce.includes('gzip')) {
+                    try { buf = zlib.gunzipSync(buf); } catch {}
+                }
+                return buf.toString('utf8');
+            } catch {
+                return null;
+            }
+        };
+
+        const extractLocs = (xml) => {
+            if (!xml) return [];
+            const locs = [];
+            const re = /<loc>\s*([^<\s]+)\s*<\/loc>/gi;
+            let m;
+            while ((m = re.exec(xml)) !== null) {
+                locs.push(m[1].trim());
+            }
+            return locs;
+        };
+
+        const handleSitemap = async (url) => {
+            const xml = await fetchXml(url);
+            if (!xml) return;
+
+            // If it's a sitemap index, recurse into child sitemaps
+            if (/<sitemapindex[\s>]/i.test(xml)) {
+                const locs = extractLocs(xml);
+                for (const loc of locs) {
+                    await handleSitemap(loc);
+                }
+                return;
+            }
+
+            // If it's a urlset, collect URLs
+            if (/<urlset[\s>]/i.test(xml)) {
+                const urls = extractLocs(xml);
+                for (const u of urls) discovered.add(u);
+                return;
+            }
+
+            // Fallback: try to parse any <loc> tags anyway
+            const urls = extractLocs(xml);
+            for (const u of urls) discovered.add(u);
+        };
+
+        for (const c of candidates) {
+            await handleSitemap(c);
+        }
+
+        let enqueued = 0;
+
+        for (const raw of discovered) {
+            try {
+                const fullUrl = new URL(raw, this.baseUrl).href;
+                if (fullUrl.toLowerCase().endsWith('.pdf')) continue;
+                if (this.isExcluded(fullUrl)) continue;
+                const visitKey = this.normalizeForComparison(fullUrl);
+                if (!visitKey) continue;
+                if (this.isValidUrl(fullUrl) && !this.visited.has(visitKey)) {
+                    this.toVisit.add({ url: fullUrl, depth: 0 });
+                    enqueued++;
+                }
+            } catch {
+                // ignore malformed entries
+            }
+        }
+
+        console.log(`🧭 Sitemap: discovered ${discovered.size} URLs, enqueued ${enqueued} HTML pages, skipped direct PDF downloads`);
+    }
+
+    capturePageXHR(page, pageUrl, pageMeta = { title: '' }) {
+        const ignorePatterns = ['translation.json', 'frontendlive', 'trigger-count', '/locales/', '/i18n'];
+        const processedResponses = new Set();
+        const cacheKey = this.normalizeForComparison(pageUrl) || pageUrl;
+        this.pageXHRCache.set(cacheKey, []);
+        const getPageXHRStore = () => {
+            if (!this.pageXHRCache.has(cacheKey)) {
+                this.pageXHRCache.set(cacheKey, []);
+            }
+            return this.pageXHRCache.get(cacheKey);
+        };
+        const addPdfFromItem = (item) => {
+            if (!item || typeof item !== 'object') return;
+            const candidateFields = ['link', 'url', 'file', 'document'];
+            let pdfValue = null;
+            for (const field of candidateFields) {
+                const value = item[field];
+                if (typeof value === 'string' && value.toLowerCase().includes('.pdf')) {
+                    pdfValue = value;
+                    break;
+                }
+                if (!pdfValue && value && typeof value === 'object') {
+                    const nestedCandidate = typeof value.url === 'string' ? value.url : (typeof value.href === 'string' ? value.href : null);
+                    if (nestedCandidate && nestedCandidate.toLowerCase().includes('.pdf')) {
+                        pdfValue = nestedCandidate;
+                        break;
+                    }
+                }
+            }
+            if (!pdfValue) return;
+
+            let pdfUrl;
+            try {
+                pdfUrl = new URL(pdfValue, pageUrl).href;
+            } catch {
+                return;
+            }
+            const titleCandidates = [
+                item.title,
+                item.name,
+                item.notification,
+                item.subject,
+                item.fileName,
+                item.caption,
+                item.heading
+            ];
+            const pdfTitle = (titleCandidates.find(v => typeof v === 'string' && v.trim().length > 0) || (pdfUrl.split('/').pop() || '')).trim();
+
+            const textCandidates = [
+                item.description,
+                item.summary,
+                item.details,
+                item.note,
+                item.content,
+                item.notification,
+                pdfTitle
+            ];
+            const textContent = (textCandidates.find(v => typeof v === 'string' && v.trim().length > 0) || '').trim();
+            const wordCount = textContent ? textContent.split(/\s+/).filter(Boolean).length : 0;
+            const parentTitle = (pageMeta && pageMeta.title) || '';
+            const timestamp = new Date().toISOString();
+
+            const pdfDoc = {
+                url: pdfUrl,
+                title: pdfTitle,
+                text: textContent,
+                pages: 0,
+                category: this.categorizeUrl(pdfUrl, `${pdfTitle} ${textContent}`.trim()),
+                timestamp,
+                parentPageUrl: pageUrl,
+                parentPageTitle: parentTitle,
+                sourceUrl: pageUrl,
+                sourceTitle: parentTitle,
+                wordCount
+            };
+
+            const existingIndex = this.scrapedData.documents.pdfs.findIndex(doc => doc.url === pdfUrl);
+            if (existingIndex !== -1) {
+                const existing = this.scrapedData.documents.pdfs[existingIndex];
+                this.scrapedData.documents.pdfs[existingIndex] = {
+                    ...existing,
+                    ...pdfDoc,
+                    wordCount: pdfDoc.wordCount || existing.wordCount || 0,
+                    pages: pdfDoc.pages || existing.pages || 0,
+                    text: pdfDoc.text || existing.text || '',
+                    category: pdfDoc.category || existing.category || 'general',
+                    timestamp: pdfDoc.timestamp || existing.timestamp,
+                    parentPageUrl: pdfDoc.parentPageUrl || existing.parentPageUrl,
+                    parentPageTitle: pdfDoc.parentPageTitle || existing.parentPageTitle,
+                    sourceUrl: pdfDoc.sourceUrl || existing.sourceUrl,
+                    sourceTitle: pdfDoc.sourceTitle || existing.sourceTitle
+                };
+            } else {
+                this.scrapedData.documents.pdfs.push(pdfDoc);
+            }
+
+            const linkEntry = {
+                url: pdfUrl,
+                text: pdfTitle || pdfUrl,
+                title: pdfTitle || pdfUrl,
+                sourceUrl: pageUrl,
+                sourceTitle: parentTitle,
+                context: textContent
+            };
+            if (!this.scrapedData.links.pdf.some(link => link.url === pdfUrl && link.sourceUrl === pageUrl)) {
+                this.scrapedData.links.pdf.push(linkEntry);
+            }
+
+            this.pdfUrls.add(pdfUrl);
+        };
+
+        const processItems = (items) => {
+            if (!Array.isArray(items) || !items.length || typeof items[0] !== 'object') return;
+            items.forEach(addPdfFromItem);
+        };
+
+        const handler = async (response) => {
+            try {
+                const request = response.request();
+                const resourceType = request.resourceType ? request.resourceType() : '';
+                if (resourceType !== 'xhr' && resourceType !== 'fetch') return;
+
+                const resUrl = response.url();
+                const lowerUrl = resUrl.toLowerCase();
+                if (ignorePatterns.some(pattern => lowerUrl.includes(pattern))) return;
+                if (processedResponses.has(resUrl)) return;
+                processedResponses.add(resUrl);
+
+                if (typeof response.ok === 'function' && !response.ok()) return;
+                const headers = (typeof response.headers === 'function' ? response.headers() : {}) || {};
+                const contentType = (headers['content-type'] || headers['Content-Type'] || '').toLowerCase();
+                if (contentType && !contentType.includes('json')) return;
+
+                let jsonData;
+                try {
+                    jsonData = await response.json();
+                } catch {
+                    return;
+                }
+
+                if (!jsonData || (typeof jsonData !== 'object' && !Array.isArray(jsonData))) {
+                    return;
+                }
+
+                getPageXHRStore().push({
+                    url: request.url(),
+                    status: response.status(),
+                    timestamp: new Date().toISOString(),
+                    data: jsonData
+                });
+
+                if (Array.isArray(jsonData)) {
+                    processItems(jsonData);
+                    return;
+                }
+
+                if (jsonData && typeof jsonData === 'object') {
+                    const candidateKeys = ['data', 'results', 'items', 'records', 'list'];
+                    for (const key of candidateKeys) {
+                        if (Array.isArray(jsonData[key])) {
+                            processItems(jsonData[key]);
+                        }
+                    }
+                }
+            } catch {
+                // Ignore individual response errors
+            }
+        };
+
+        page.on('response', handler);
+        return () => page.off('response', handler);
+    }
+
+    // --- END: Sitemap loader --- 
     async scrapePage(url, depth = 0) {
-        if (this.visited.has(url) || depth > this.maxDepth || this.visited.size >= this.maxPages) {
+        if (this.isExcluded(url)) {
+            return null;
+        }
+        const visitKey = this.normalizeForComparison(url) || url;
+        if (this.visited.has(visitKey) || depth > this.maxDepth || this.visited.size >= this.maxPages) {
             return null;
         }
 
         console.log(`🔍 Scraping [${depth}/${this.maxDepth}] (${this.visited.size}/${this.maxPages}): ${url}`);
-        this.visited.add(url);
+        this.visited.add(visitKey);
+
+        const pageMeta = { title: '' };
+        let detachXHR = this.capturePageXHR(this.page, url, pageMeta);
+        let latestResolvedKey = null;
 
         try {
             await this.page.goto(url, { 
@@ -201,6 +502,103 @@ class NITJSRScraper {
 
             // Wait for dynamic content to load
             await this.page.waitForTimeout(this.delay);
+
+            pageMeta.title = (await this.page.title().catch(() => '')) || '';
+
+            // collect ALL table pages into here
+            const allTableRows = []; // array of { headers, rows } we will merge later
+
+            // helper to read the current table in the DOM
+            const grabCurrentTable = async () => {
+                const tableData = await this.page.evaluate(() => {
+                    const table = document.querySelector('table');
+                    if (!table) return null;
+
+                    const headers = Array.from(table.querySelectorAll('thead th')).map(th =>
+                        (th.textContent || '').trim()
+                    );
+
+                    const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr => {
+                        return Array.from(tr.querySelectorAll('td,th')).map(td =>
+                            (td.textContent || '').trim()
+                        );
+                    });
+
+                    return { headers, rows };
+                });
+                if (tableData && tableData.rows && tableData.rows.length) {
+                    allTableRows.push(tableData);
+                }
+            };
+
+            // Attempt to expand client-side pagination before extraction
+            const expandClientPagination = async () => {
+                const maxIterations = 25;
+
+                // grab the very first page BEFORE clicking anything
+                await grabCurrentTable();
+
+                for (let i = 0; i < maxIterations; i++) {
+                    const clicked = await this.page.evaluate(() => {
+                        // 1. legacy selectors
+                        const legacyCandidates = Array.from(document.querySelectorAll(
+                            '.pagination li a, .paginate_button, .dataTables_paginate a, .page-link'
+                        ));
+
+                        const findClickableNext = (els) => {
+                            for (const el of els) {
+                                const text = (el.textContent || '').trim().toLowerCase();
+                                const disabled =
+                                    el.closest('.disabled') ||
+                                    el.classList.contains('disabled') ||
+                                    el.getAttribute('aria-disabled') === 'true';
+                                if (disabled) continue;
+                                if (
+                                    text === 'next' ||
+                                    text === '>' ||
+                                    text === '»' ||
+                                    el.classList.contains('next') ||
+                                    el.rel === 'next'
+                                ) {
+                                    return el;
+                                }
+                            }
+                            return null;
+                        };
+
+                        // 2. Material UI buttons
+                        const muiNext =
+                            document.querySelector('button[aria-label="Go to next page"]:not([disabled])') ||
+                            document.querySelector('button[title="Next page"]:not([disabled])') ||
+                            null;
+
+                        const legacyNext = findClickableNext(legacyCandidates);
+                        const target = legacyNext || muiNext;
+                        if (!target) return false;
+
+                        target.click();
+                        return true;
+                    }).catch(() => false);
+
+                    if (!clicked) break;
+
+                    // wait for table to update + XHR to finish
+                    await this.page.waitForTimeout(500);
+
+                    // grab the table for THIS page too
+                    await grabCurrentTable();
+                }
+
+                // return merged table data so scrapePage can use it
+                return allTableRows;
+            };
+
+            let collectedTables = [];
+            try {
+                collectedTables = await expandClientPagination();
+            } catch {
+                collectedTables = allTableRows;
+            }
 
             // Try to load more content by scrolling
             await this.page.evaluate(() => {
@@ -221,6 +619,18 @@ class NITJSRScraper {
             });
 
             const pageData = await this.page.evaluate(() => {
+                const isHomePage = !window.location || window.location.pathname === '/' || window.location.pathname === '';
+                if (!isHomePage) {
+                    const removeElements = (selectors = []) => {
+                        selectors.forEach(selector => {
+                            document.querySelectorAll(selector).forEach(node => node.remove());
+                        });
+                    };
+                    removeElements(['footer', '#footer', '.footer', '.site-footer', '.bottom-footer']);
+                    removeElements(['#site_accessibility_icon', '#site_accessibility', '.__access-main-css']);
+                    removeElements(['[id*="accessibility"]', '[class*="accessibility"]']);
+                }
+
                 const data = {
                     title: document.title || '',
                     headings: [],
@@ -308,15 +718,146 @@ class NITJSRScraper {
                 return data;
             });
 
+            pageMeta.title = pageData.title || pageMeta.title;
+            const finalPageTitle = pageMeta.title;
+            if (finalPageTitle) {
+                this.scrapedData.links.pdf.forEach(link => {
+                    if (link.sourceUrl === url) {
+                        link.sourceTitle = finalPageTitle;
+                    }
+                });
+                this.scrapedData.documents.pdfs.forEach(pdf => {
+                    if (pdf.parentPageUrl === url) {
+                        pdf.parentPageTitle = finalPageTitle;
+                        if (Object.prototype.hasOwnProperty.call(pdf, 'sourceTitle')) {
+                            pdf.sourceTitle = finalPageTitle;
+                        }
+                    }
+                });
+            }
+
+            const currentSourceTitle = pageMeta.title;
+            const extractedTables = Array.isArray(pageData.tables) ? pageData.tables : [];
+            const mergeTables = (chunks) => {
+                if (!Array.isArray(chunks) || !chunks.length) return [];
+                const firstWithRows = chunks.find(chunk => Array.isArray(chunk?.rows) && chunk.rows.length) || chunks[0];
+                const merged = {
+                    headers: Array.isArray(firstWithRows?.headers) ? firstWithRows.headers : [],
+                    rows: []
+                };
+                chunks.forEach(chunk => {
+                    if (!chunk || typeof chunk !== 'object') return;
+                    const rows = Array.isArray(chunk.rows) ? chunk.rows : [];
+                    rows.forEach(row => {
+                        if (Array.isArray(row)) {
+                            merged.rows.push(row);
+                        }
+                    });
+                });
+                if (!merged.rows.length && !merged.headers.length) {
+                    return [];
+                }
+                return [merged];
+            };
+            const mergedPaginatedTables = (Array.isArray(collectedTables) && collectedTables.length) ? mergeTables(collectedTables) : [];
+            const resolvedTables = (mergedPaginatedTables && mergedPaginatedTables.length) ? mergedPaginatedTables : extractedTables;
+            pageData.tables = resolvedTables;
+
+            const tableTextContent = (() => {
+                if (!Array.isArray(resolvedTables)) return [];
+                const lines = [];
+                resolvedTables.forEach(table => {
+                    if (!table) return;
+                    if (Array.isArray(table)) {
+                        table.forEach(row => {
+                            if (Array.isArray(row)) {
+                                lines.push(row.join(' '));
+                            } else if (row) {
+                                lines.push(String(row));
+                            }
+                        });
+                        return;
+                    }
+                    if (typeof table === 'object') {
+                        if (Array.isArray(table.headers) && table.headers.length) {
+                            lines.push(table.headers.join(' '));
+                        }
+                        if (Array.isArray(table.rows)) {
+                            table.rows.forEach(row => {
+                                if (Array.isArray(row)) {
+                                    lines.push(row.join(' '));
+                                } else if (row) {
+                                    lines.push(String(row));
+                                }
+                            });
+                        }
+                    }
+                });
+                return lines;
+            })();
+
+            const cleanedLinks = [];
+            const seenLinks = new Set();
+            pageData.links.forEach(link => {
+                const rawHref = (link.href || '').trim();
+                if (!rawHref) return;
+                const lowerHref = rawHref.toLowerCase();
+                if (lowerHref.startsWith('javascript:') || lowerHref.startsWith('mailto:') || lowerHref.startsWith('tel:')) return;
+                if (rawHref === '#') return;
+
+                let absoluteHref;
+                try {
+                    absoluteHref = new URL(rawHref, url).href;
+                } catch {
+                    return;
+                }
+
+                if (!seenLinks.has(absoluteHref)) {
+                    seenLinks.add(absoluteHref);
+                    cleanedLinks.push({
+                        ...link,
+                        href: absoluteHref
+                    });
+                }
+            });
+            pageData.links = cleanedLinks;
+
             const allContent = [
                 pageData.title,
                 ...pageData.headings.map(h => h.text),
                 ...pageData.content,
-                ...pageData.tables.flat().flat(),
+                ...tableTextContent,
                 ...pageData.lists.flat(),
                 pageData.metadata.description,
                 pageData.metadata.keywords
             ].filter(Boolean).join(' ');
+
+            const cacheKey = this.normalizeForComparison(url) || url;
+            const resolvedUrl = this.page.url();
+            const resolvedKey = this.normalizeForComparison(resolvedUrl) || resolvedUrl;
+            latestResolvedKey = resolvedKey;
+            const xhrEntries = [];
+            const seenXhr = new Set();
+            const collectXhrFromKey = (key) => {
+                if (!key) return;
+                const bucket = this.pageXHRCache.get(key);
+                if (!bucket || !Array.isArray(bucket)) return;
+                bucket.forEach(entry => {
+                    if (!entry || typeof entry !== 'object') return;
+                    const signature = `${entry.url || ''}|${entry.timestamp || ''}`;
+                    if (seenXhr.has(signature)) return;
+                    seenXhr.add(signature);
+                    xhrEntries.push(entry);
+                });
+            };
+            collectXhrFromKey(cacheKey);
+            if (resolvedKey && resolvedKey !== cacheKey) {
+                collectXhrFromKey(resolvedKey);
+            }
+            this.pageXHRCache.set(cacheKey, xhrEntries);
+            if (resolvedKey && resolvedKey !== cacheKey) {
+                this.pageXHRCache.set(resolvedKey, xhrEntries);
+            }
 
             const processedPage = {
                 url: url,
@@ -326,43 +867,48 @@ class NITJSRScraper {
                 headings: pageData.headings,
                 content: allContent,
                 rawContent: pageData.content,
-                tables: pageData.tables,
+                tables: (mergedPaginatedTables && mergedPaginatedTables.length) ? mergedPaginatedTables : extractedTables,
                 lists: pageData.lists,
                 links: pageData.links,
                 metadata: pageData.metadata,
+                xhrResponses: xhrEntries,
                 category: this.categorizeUrl(url, allContent),
                 wordCount: allContent.split(' ').length
             };
 
-            this.scrapedData.categories[processedPage.category].push(processedPage);
             this.scrapedData.pages.push(processedPage);
+            console.log(`Page ${processedPage.url} -> ${processedPage.xhrResponses.length} XHR responses captured`);
 
             pageData.links.forEach(link => {
                 try {
-                    const fullUrl = new URL(link.href, url).href;
+                    const fullUrl = link.href;
+                    const hrefLower = fullUrl.toLowerCase();
                     const linkData = {
                         url: fullUrl,
                         text: link.text,
                         title: link.title,
                         sourceUrl: url,
-                        sourceTitle: pageData.title,
+                        sourceTitle: currentSourceTitle,
                         context: link.parentText
                     };
 
-                    if (link.href.toLowerCase().includes('.pdf')) {
-                        this.scrapedData.links.pdf.push(linkData);
+                    if (hrefLower.includes('.pdf')) {
+                        if (!this.scrapedData.links.pdf.some(existing => existing.url === fullUrl && existing.sourceUrl === url)) {
+                            this.scrapedData.links.pdf.push(linkData);
+                        }
                         this.pdfUrls.add(fullUrl);
-                    } else if (link.href.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/)) {
+                    } else if (hrefLower.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
                         this.scrapedData.links.image.push(linkData);
                     } else if (fullUrl.includes('nitjsr.ac.in')) {
                         this.scrapedData.links.internal.push(linkData);
-                        if (this.isValidUrl(fullUrl) && !this.visited.has(fullUrl)) {
+                        const childVisitKey = this.normalizeForComparison(fullUrl);
+                        if (childVisitKey && this.isValidUrl(fullUrl) && !this.visited.has(childVisitKey) && !this.isExcluded(fullUrl)) {
                             this.toVisit.add({url: fullUrl, depth: depth + 1});
                         }
                     } else {
                         this.scrapedData.links.external.push(linkData);
                     }
-                } catch (error) {
+                } catch {
                     // Invalid URL, skip
                 }
             });
@@ -373,11 +919,22 @@ class NITJSRScraper {
         } catch (error) {
             console.error(`❌ Failed to scrape ${url}:`, error.message);
             return null;
+        } finally {
+            if (detachXHR) {
+                detachXHR();
+            }
+            const cleanupKey = this.normalizeForComparison(url) || url;
+            if (cleanupKey) {
+                this.pageXHRCache.delete(cleanupKey);
+            }
+            if (latestResolvedKey && latestResolvedKey !== cleanupKey) {
+                this.pageXHRCache.delete(latestResolvedKey);
+            }
         }
     }
 
     async processPDFDocuments() {
-        console.log(`📄 Processing ${this.pdfUrls.size} discovered PDF documents...`);
+        console.log(`dY", Processing ${this.pdfUrls.size} discovered PDF documents...`);
         
         const pdfArray = Array.from(this.pdfUrls);
         const maxPdfs = Math.min(pdfArray.length, 50); // Increased PDF limit
@@ -385,18 +942,31 @@ class NITJSRScraper {
         for (let i = 0; i < maxPdfs; i++) {
             const pdfUrl = pdfArray[i];
             try {
-                console.log(`📖 Processing PDF ${i + 1}/${maxPdfs}: ${pdfUrl}`);
-                
-                const response = await axios.get(pdfUrl, { 
-                    responseType: 'arraybuffer',
-                    timeout: 60000, // Increased timeout
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    },
-                    maxContentLength: 50 * 1024 * 1024 // 50MB limit
-                });
+                console.log(`dY"- Processing PDF ${i + 1}/${maxPdfs}: ${pdfUrl}`);
 
-                const pdfData = await pdfParse(response.data);
+                let pdfText = '';
+                let pdfPages = 0;
+
+                try {
+                    const response = await axios.get(pdfUrl, { 
+                        responseType: 'arraybuffer',
+                        timeout: 60000, // Increased timeout
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        },
+                        maxContentLength: 50 * 1024 * 1024 // 50MB limit
+                    });
+
+                    try {
+                        const pdfData = await pdfParse(response.data);
+                        pdfText = pdfData.text || '';
+                        pdfPages = pdfData.numpages || 0;
+                    } catch (parseError) {
+                        console.error(`??O Failed to parse PDF ${pdfUrl}:`, parseError.message);
+                    }
+                } catch (downloadError) {
+                    console.error(`??O Failed to download PDF ${pdfUrl}:`, downloadError.message);
+                }
                 
                 // Find the link information for this PDF
                 const linkInfo = this.scrapedData.links.pdf.find(link => link.url === pdfUrl);
@@ -404,21 +974,40 @@ class NITJSRScraper {
                 const pdfDoc = {
                     url: pdfUrl,
                     title: linkInfo ? linkInfo.text : pdfUrl.split('/').pop(),
-                    text: pdfData.text,
-                    pages: pdfData.numpages,
-                    category: this.categorizeUrl(pdfUrl, pdfData.text),
+                    text: pdfText,
+                    pages: pdfPages,
+                    category: this.categorizeUrl(pdfUrl, pdfText),
                     timestamp: new Date().toISOString(),
+                    parentPageUrl: linkInfo ? linkInfo.sourceUrl : '',
+                    parentPageTitle: linkInfo ? linkInfo.sourceTitle : '',
                     sourceUrl: linkInfo ? linkInfo.sourceUrl : '',
                     sourceTitle: linkInfo ? linkInfo.sourceTitle : '',
-                    context: linkInfo ? linkInfo.context : '',
-                    wordCount: pdfData.text.split(' ').length
+                    wordCount: pdfText ? pdfText.split(' ').length : 0
                 };
 
-                this.scrapedData.documents.pdfs.push(pdfDoc);
-                console.log(`✅ Processed PDF: ${pdfData.numpages} pages, ${pdfDoc.wordCount} words`);
+                const existingIndex = this.scrapedData.documents.pdfs.findIndex(doc => doc.url === pdfUrl);
+                if (existingIndex !== -1) {
+                    const existing = this.scrapedData.documents.pdfs[existingIndex];
+                    this.scrapedData.documents.pdfs[existingIndex] = {
+                        ...existing,
+                        ...pdfDoc,
+                        wordCount: pdfDoc.wordCount || existing.wordCount || 0,
+                        pages: pdfDoc.pages || existing.pages || 0,
+                        text: pdfDoc.text || existing.text || '',
+                        category: pdfDoc.category || existing.category || 'general',
+                        timestamp: pdfDoc.timestamp || existing.timestamp,
+                        parentPageUrl: pdfDoc.parentPageUrl || existing.parentPageUrl,
+                        parentPageTitle: pdfDoc.parentPageTitle || existing.parentPageTitle,
+                        sourceUrl: pdfDoc.sourceUrl || existing.sourceUrl,
+                        sourceTitle: pdfDoc.sourceTitle || existing.sourceTitle
+                    };
+                } else {
+                    this.scrapedData.documents.pdfs.push(pdfDoc);
+                }
+                console.log(`?o. Processed PDF: ${pdfDoc.pages} pages, ${pdfDoc.wordCount} words`);
 
             } catch (error) {
-                console.error(`❌ Failed to process PDF ${pdfUrl}:`, error.message);
+                console.error(`??O Failed to process PDF ${pdfUrl}:`, error.message);
             }
         }
     }
@@ -426,48 +1015,70 @@ class NITJSRScraper {
     async scrapeComprehensive() {
         try {
             await this.initialize();
+            this.priorityQueue = [];
+
+            const prioritySeen = new Set();
+            this.priorityUrls.forEach(priorityUrl => {
+                try {
+                    const fullUrl = this.normalizeUrl(priorityUrl);
+                    if (!fullUrl) return;
+                    if (this.isExcluded(fullUrl)) return;
+                    if (!this.isValidUrl(fullUrl)) return;
+                    const priorityKey = this.normalizeForComparison(fullUrl) || fullUrl;
+                    if (prioritySeen.has(priorityKey) || this.visited.has(priorityKey)) return;
+                    prioritySeen.add(priorityKey);
+                    const entry = { url: fullUrl, depth: 0 };
+                    this.priorityQueue.push(entry);
+                    this.toVisit.add(entry);
+                } catch {
+                    // ignore invalid priority URL
+                }
+            });
             
-            //TODO: Add more start URLs
             const startUrls = [
                 'https://nitjsr.ac.in/',
-                'https://nitjsr.ac.in/Students/Placements',
-                'https://nitjsr.ac.in/Students/Training-Placements',
-                'https://nitjsr.ac.in/Admissions',
-                'https://nitjsr.ac.in/Academics',
-                'https://nitjsr.ac.in/Faculty',
-                'https://nitjsr.ac.in/Research',
-                'https://nitjsr.ac.in/Students',
-                'https://nitjsr.ac.in/Administration',
-                'https://nitjsr.ac.in/Departments/CSE',
-                'https://nitjsr.ac.in/Departments/ECE',
-                'https://nitjsr.ac.in/Departments/EEE',
-                'https://nitjsr.ac.in/Departments/ME',
-                'https://nitjsr.ac.in/Departments/CE',
-                'https://nitjsr.ac.in/Departments/CHE',
-                'https://nitjsr.ac.in/Departments/MME',
-                'https://nitjsr.ac.in/Departments/Physics',
-                'https://nitjsr.ac.in/Departments/Chemistry',
-                'https://nitjsr.ac.in/Departments/Mathematics',
-                'https://nitjsr.ac.in/Departments/HSS',
-                'https://nitjsr.ac.in/About',
-                'https://nitjsr.ac.in/Infrastructure',
-                'https://nitjsr.ac.in/News',
-                'https://nitjsr.ac.in/Events',
-                'https://nitjsr.ac.in/Tenders',
-                'https://nitjsr.ac.in/Recruitments',
-                'https://nitjsr.ac.in/People/Faculty'//Doesn't work IDK why
             ];
 
             // Add starting URLs to visit queue
             startUrls.forEach(url => {
-                this.toVisit.add({url: url, depth: 0});
+                const normalized = this.normalizeUrl(url);
+                if (!normalized) return;
+                if (this.isExcluded(normalized)) return;
+                const startKey = this.normalizeForComparison(normalized);
+                if (startKey && this.visited.has(startKey)) return;
+                this.toVisit.add({url: normalized, depth: 0});
             });
+
+            // --- NEW: seed queue from sitemap(s) ---
+            await this.loadSitemapUrls();
+            // --- END NEW ---
 
             console.log(`🌐 Starting enhanced comprehensive scrape of ${startUrls.length} main sections...`);
 
-            while (this.toVisit.size > 0 && this.visited.size < this.maxPages) {
-                const {url, depth} = Array.from(this.toVisit)[0];
-                this.toVisit.delete(Array.from(this.toVisit)[0]);
+            while ((this.priorityQueue.length > 0 || this.toVisit.size > 0) && this.visited.size < this.maxPages) {
+                let nextEntry = null;
+
+                if (this.priorityQueue.length > 0) {
+                    nextEntry = this.priorityQueue.shift();
+                    for (const candidate of this.toVisit) {
+                        if (candidate.url === nextEntry.url) {
+                            this.toVisit.delete(candidate);
+                            break;
+                        }
+                    }
+                } else {
+                    const iterator = this.toVisit.values().next();
+                    if (iterator.done) break;
+                    nextEntry = iterator.value;
+                    this.toVisit.delete(nextEntry);
+                }
+
+                if (!nextEntry) continue;
+
+                const { url, depth } = nextEntry;
+                if (this.isExcluded(url)) {
+                    continue;
+                }
 
                 await this.scrapePage(url, depth);
                 
@@ -500,8 +1111,7 @@ class NITJSRScraper {
             this.scrapedData.links.external.length + 
             this.scrapedData.links.pdf.length + 
             this.scrapedData.links.image.length;
-        this.scrapedData.statistics.categorizedPages = Object.values(this.scrapedData.categories)
-            .reduce((sum, category) => sum + category.length, 0);
+        this.scrapedData.statistics.categorizedPages = this.scrapedData.pages.length;
     }
 
     async saveData() {
@@ -515,15 +1125,21 @@ class NITJSRScraper {
         // Save the data
         await fs.writeFile(filepath, JSON.stringify(this.scrapedData, null, 2), 'utf8');
 
+        const categoryCounts = this.scrapedData.pages.reduce((acc, page) => {
+            const key = page.category || 'general';
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {});
+
         const summary = {
             filename: filename,
             timestamp: new Date().toISOString(),
             totalPages: this.scrapedData.statistics.totalPages,
             totalPDFs: this.scrapedData.statistics.totalPDFs,
             totalLinks: this.scrapedData.statistics.totalLinks,
-            categories: Object.keys(this.scrapedData.categories).map(cat => ({
-                name: cat,
-                count: this.scrapedData.categories[cat].length
+            categories: Object.entries(categoryCounts).map(([name, count]) => ({
+                name,
+                count
             })),
             pdfBreakdown: this.scrapedData.documents.pdfs.map(pdf => ({
                 title: pdf.title,
