@@ -505,99 +505,210 @@ class NITJSRScraper {
 
             pageMeta.title = (await this.page.title().catch(() => '')) || '';
 
-            // collect ALL table pages into here
-            const allTableRows = []; // array of { headers, rows } we will merge later
+            const extractFullDom = async () => {
+                return await this.page.evaluate(() => {
+                    const isHomePage = !window.location || window.location.pathname === '/' || window.location.pathname === '';
+                    if (!isHomePage) {
+                        const removeElements = (selectors = []) => {
+                            selectors.forEach(selector => {
+                                document.querySelectorAll(selector).forEach(node => node.remove());
+                            });
+                        };
+                        removeElements(['footer', '#footer', '.footer', '.site-footer', '.bottom-footer']);
+                        removeElements(['#site_accessibility_icon', '#site_accessibility', '.__access-main-css']);
+                        removeElements(['[id*="accessibility"]', '[class*="accessibility"]']);
+                    }
 
-            // helper to read the current table in the DOM
-            const grabCurrentTable = async () => {
-                const tableData = await this.page.evaluate(() => {
-                    const table = document.querySelector('table');
-                    if (!table) return null;
+                    const data = {
+                        title: document.title || '',
+                        headings: [],
+                        content: [],
+                        links: [],
+                        metadata: {
+                            description: '',
+                            keywords: ''
+                        },
+                        tables: [],
+                        lists: []
+                    };
 
-                    const headers = Array.from(table.querySelectorAll('thead th')).map(th =>
-                        (th.textContent || '').trim()
-                    );
+                    const metaDescription = document.querySelector('meta[name="description"]');
+                    if (metaDescription) {
+                        data.metadata.description = metaDescription.getAttribute('content') || '';
+                    }
 
-                    const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr => {
-                        return Array.from(tr.querySelectorAll('td,th')).map(td =>
-                            (td.textContent || '').trim()
-                        );
+                    const metaKeywords = document.querySelector('meta[name="keywords"]');
+                    if (metaKeywords) {
+                        data.metadata.keywords = metaKeywords.getAttribute('content') || '';
+                    }
+
+                    document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(heading => {
+                        data.headings.push({
+                            level: parseInt(heading.tagName.charAt(1)),
+                            text: heading.textContent.trim(),
+                            id: heading.id || null
+                        });
                     });
 
-                    return { headers, rows };
+                    const contentSelectors = [
+                        'p', 'div.content', '.main-content', '.page-content', '.article-content',
+                        '.description', '.info', '.details', '.summary',
+                        'article', 'section', '.text-content'
+                    ];
+
+                    contentSelectors.forEach(selector => {
+                        document.querySelectorAll(selector).forEach(element => {
+                            const text = element.textContent.trim();
+                            if (text && text.length > 30 && !data.content.some(existing => existing.includes(text.substring(0, 50)))) {
+                                data.content.push(text);
+                            }
+                        });
+                    });
+
+                    document.querySelectorAll('table').forEach(table => {
+                        const tableData = [];
+                        table.querySelectorAll('tr').forEach(row => {
+                            const rowData = [];
+                            row.querySelectorAll('td, th').forEach(cell => {
+                                rowData.push(cell.textContent.trim());
+                            });
+                            if (rowData.length > 0) tableData.push(rowData);
+                        });
+                        if (tableData.length > 0) data.tables.push(tableData);
+                    });
+
+                    document.querySelectorAll('ul, ol').forEach(list => {
+                        const listItems = [];
+                        list.querySelectorAll('li').forEach(item => {
+                            const text = item.textContent.trim();
+                            if (text && text.length > 10) listItems.push(text);
+                        });
+                        if (listItems.length > 0) data.lists.push(listItems);
+                    });
+
+                    document.querySelectorAll('a[href]').forEach(link => {
+                        const href = link.getAttribute('href');
+                        const text = link.textContent.trim();
+                        if (href) {
+                            data.links.push({
+                                href: href,
+                                text: text || href,
+                                title: link.getAttribute('title') || '',
+                                className: link.className || '',
+                                parentText: link.parentElement ? link.parentElement.textContent.trim().substring(0, 100) : ''
+                            });
+                        }
+                    });
+
+                    return data;
                 });
-                if (tableData && tableData.rows && tableData.rows.length) {
-                    allTableRows.push(tableData);
-                }
             };
 
-            // Attempt to expand client-side pagination before extraction
-            const expandClientPagination = async () => {
-                const maxIterations = 25;
+            const domSnapshots = [];
+            try {
+                const initialSnapshot = await extractFullDom();
+                if (initialSnapshot) {
+                    domSnapshots.push({ index: 0, data: initialSnapshot });
+                }
+            } catch {
+                // ignore initial extraction failure
+            }
 
-                // grab the very first page BEFORE clicking anything
-                await grabCurrentTable();
+            // inside scrapePage, after you define extractFullDom()
+            let snapshotCounter = 1; // assuming you already pushed index 0
+
+            const expandClientPagination = async () => {
+                const maxIterations = 30;
 
                 for (let i = 0; i < maxIterations; i++) {
+                    // 1) take a small signature of current DOM so we can detect change
+                    const prevSignature = await this.page.evaluate(() => {
+                        const root =
+                            document.querySelector('main') ||
+                            document.querySelector('#root') ||
+                            document.body;
+                        const text = root ? root.innerText.slice(0, 500) : document.body.innerText.slice(0, 500);
+                        return text;
+                    });
+
+                    // 2) try to click the "right arrow" next to the page number
                     const clicked = await this.page.evaluate(() => {
-                        // 1. legacy selectors
-                        const legacyCandidates = Array.from(document.querySelectorAll(
-                            '.pagination li a, .paginate_button, .dataTables_paginate a, .page-link'
-                        ));
+                        // find something that is *just* a number, like "1" or "2"
+                        const numberEl = Array.from(document.querySelectorAll('*')).find(el => {
+                            const t = (el.textContent || '').trim();
+                            // single number, not empty, and parent has buttons
+                            return /^\d+$/.test(t) &&
+                                el.parentElement &&
+                                el.parentElement.querySelectorAll('button').length >= 1;
+                        });
 
-                        const findClickableNext = (els) => {
-                            for (const el of els) {
-                                const text = (el.textContent || '').trim().toLowerCase();
-                                const disabled =
-                                    el.closest('.disabled') ||
-                                    el.classList.contains('disabled') ||
-                                    el.getAttribute('aria-disabled') === 'true';
-                                if (disabled) continue;
-                                if (
-                                    text === 'next' ||
-                                    text === '>' ||
-                                    text === '»' ||
-                                    el.classList.contains('next') ||
-                                    el.rel === 'next'
-                                ) {
-                                    return el;
-                                }
+                        if (numberEl) {
+                            const parent = numberEl.parentElement;
+                            const buttons = Array.from(parent.querySelectorAll('button'));
+
+                            // usually this widget has either:
+                            // page "1" + right arrow
+                            // or left arrow + "2" + right arrow
+                            // so the right arrow is the LAST button
+                            const rightBtn = buttons[buttons.length - 1];
+
+                            if (rightBtn &&
+                                !rightBtn.disabled &&
+                                rightBtn.getAttribute('aria-disabled') !== 'true') {
+                                rightBtn.click();
+                                return true;
                             }
-                            return null;
-                        };
+                        }
 
-                        // 2. Material UI buttons
-                        const muiNext =
+                        // fallback: try common "next" selectors
+                        const altNext =
                             document.querySelector('button[aria-label="Go to next page"]:not([disabled])') ||
-                            document.querySelector('button[title="Next page"]:not([disabled])') ||
-                            null;
+                            document.querySelector('button[title="Next page"]:not([disabled])');
+                        if (altNext) {
+                            altNext.click();
+                            return true;
+                        }
 
-                        const legacyNext = findClickableNext(legacyCandidates);
-                        const target = legacyNext || muiNext;
-                        if (!target) return false;
-
-                        target.click();
-                        return true;
+                        return false;
                     }).catch(() => false);
 
-                    if (!clicked) break;
+                    if (!clicked) {
+                        // no more pages
+                        break;
+                    }
 
-                    // wait for table to update + XHR to finish
-                    await this.page.waitForTimeout(500);
+                    // 3) wait for DOM to actually change
+                    try {
+                        await this.page.waitForFunction((oldSig) => {
+                            const root =
+                                document.querySelector('main') ||
+                                document.querySelector('#root') ||
+                                document.body;
+                            const text = root ? root.innerText.slice(0, 500) : document.body.innerText.slice(0, 500);
+                            return text !== oldSig;
+                        }, { timeout: 3000 }, prevSignature);
+                    } catch (e) {
+                        // even if we didn't detect change, give it a bit
+                        await this.page.waitForTimeout(600);
+                    }
 
-                    // grab the table for THIS page too
-                    await grabCurrentTable();
+                    // 4) now grab this NEW state of the DOM
+                    try {
+                        const snapshot = await extractFullDom();
+                        if (snapshot) {
+                            domSnapshots.push({ index: snapshotCounter, data: snapshot });
+                            snapshotCounter += 1;
+                        }
+                    } catch (e) {
+                        // ignore and continue
+                    }
                 }
-
-                // return merged table data so scrapePage can use it
-                return allTableRows;
             };
 
-            let collectedTables = [];
             try {
-                collectedTables = await expandClientPagination();
+                await expandClientPagination();
             } catch {
-                collectedTables = allTableRows;
+                // Ignore pagination expansion failures
             }
 
             // Try to load more content by scrolling
@@ -618,21 +729,19 @@ class NITJSRScraper {
                 });
             });
 
-            const pageData = await this.page.evaluate(() => {
-                const isHomePage = !window.location || window.location.pathname === '/' || window.location.pathname === '';
-                if (!isHomePage) {
-                    const removeElements = (selectors = []) => {
-                        selectors.forEach(selector => {
-                            document.querySelectorAll(selector).forEach(node => node.remove());
-                        });
-                    };
-                    removeElements(['footer', '#footer', '.footer', '.site-footer', '.bottom-footer']);
-                    removeElements(['#site_accessibility_icon', '#site_accessibility', '.__access-main-css']);
-                    removeElements(['[id*="accessibility"]', '[class*="accessibility"]']);
+            try {
+                const postScrollSnapshot = await extractFullDom();
+                if (postScrollSnapshot) {
+                    domSnapshots.push({ index: snapshotCounter, data: postScrollSnapshot });
+                    snapshotCounter += 1;
                 }
+            } catch {
+                // ignore snapshot capture failure
+            }
 
-                const data = {
-                    title: document.title || '',
+            const mergeDomSnapshots = (snapshots = []) => {
+                const createEmpty = () => ({
+                    title: '',
                     headings: [],
                     content: [],
                     links: [],
@@ -642,81 +751,103 @@ class NITJSRScraper {
                     },
                     tables: [],
                     lists: []
-                };
-
-                // Extract meta information
-                const metaDescription = document.querySelector('meta[name="description"]');
-                if (metaDescription) {
-                    data.metadata.description = metaDescription.getAttribute('content') || '';
-                }
-                
-                const metaKeywords = document.querySelector('meta[name="keywords"]');
-                if (metaKeywords) {
-                    data.metadata.keywords = metaKeywords.getAttribute('content') || '';
-                }
-
-                // Extract headings with hierarchy
-                document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(heading => {
-                    data.headings.push({
-                        level: parseInt(heading.tagName.charAt(1)),
-                        text: heading.textContent.trim(),
-                        id: heading.id || null
-                    });
                 });
 
-                // Extract meaningful content with better selectors
-                const contentSelectors = [
-                    'p', 'div.content', '.main-content', '.page-content', '.article-content',
-                    '.description', '.info', '.details', '.summary', 
-                    'article', 'section', '.text-content'
-                ];
-                
-                contentSelectors.forEach(selector => {
-                    document.querySelectorAll(selector).forEach(element => {
-                        const text = element.textContent.trim();
-                        if (text && text.length > 30 && !data.content.some(existing => existing.includes(text.substring(0, 50)))) {
-                            data.content.push(text);
+                if (!Array.isArray(snapshots) || snapshots.length === 0) {
+                    return createEmpty();
+                }
+
+                const combined = createEmpty();
+                const headingSet = new Set();
+                const contentSet = new Set();
+                const listSet = new Set();
+                const linkSet = new Set();
+
+                snapshots.forEach((snapshot) => {
+                    const data = snapshot?.data;
+                    if (!data || typeof data !== 'object') return;
+
+                    if (!combined.title && data.title) {
+                        combined.title = data.title;
+                    }
+
+                    if (data.metadata) {
+                        if (!combined.metadata.description && data.metadata.description) {
+                            combined.metadata.description = data.metadata.description;
                         }
-                    });
-                });
+                        if (!combined.metadata.keywords && data.metadata.keywords) {
+                            combined.metadata.keywords = data.metadata.keywords;
+                        }
+                    }
 
-                document.querySelectorAll('table').forEach(table => {
-                    const tableData = [];
-                    table.querySelectorAll('tr').forEach(row => {
-                        const rowData = [];
-                        row.querySelectorAll('td, th').forEach(cell => {
-                            rowData.push(cell.textContent.trim());
+                    if (Array.isArray(data.headings)) {
+                        data.headings.forEach(heading => {
+                            if (!heading || typeof heading !== 'object') return;
+                            const key = `${heading.level || 0}|${heading.text || ''}|${heading.id || ''}`;
+                            if (headingSet.has(key)) return;
+                            headingSet.add(key);
+                            combined.headings.push({
+                                level: heading.level,
+                                text: heading.text,
+                                id: heading.id || null
+                            });
                         });
-                        if (rowData.length > 0) tableData.push(rowData);
-                    });
-                    if (tableData.length > 0) data.tables.push(tableData);
-                });
+                    }
 
-                document.querySelectorAll('ul, ol').forEach(list => {
-                    const listItems = [];
-                    list.querySelectorAll('li').forEach(item => {
-                        const text = item.textContent.trim();
-                        if (text && text.length > 10) listItems.push(text);
-                    });
-                    if (listItems.length > 0) data.lists.push(listItems);
-                });
+                    if (Array.isArray(data.content)) {
+                        data.content.forEach(text => {
+                            if (!text || typeof text !== 'string') return;
+                            if (contentSet.has(text)) return;
+                            contentSet.add(text);
+                            combined.content.push(text);
+                        });
+                    }
 
-                document.querySelectorAll('a[href]').forEach(link => {
-                    const href = link.getAttribute('href');
-                    const text = link.textContent.trim();
-                    if (href) {
-                        data.links.push({
-                            href: href,
-                            text: text || href,
-                            title: link.getAttribute('title') || '',
-                            className: link.className || '',
-                            parentText: link.parentElement ? link.parentElement.textContent.trim().substring(0, 100) : ''
+                    if (Array.isArray(data.tables)) {
+                        data.tables.forEach(table => {
+                            if (Array.isArray(table)) {
+                                combined.tables.push(table.map(row => Array.isArray(row) ? [...row] : row));
+                            } else if (table && typeof table === 'object') {
+                                combined.tables.push({
+                                    headers: Array.isArray(table.headers) ? [...table.headers] : [],
+                                    rows: Array.isArray(table.rows) ? table.rows.map(row => Array.isArray(row) ? [...row] : row) : []
+                                });
+                            }
+                        });
+                    }
+
+                    if (Array.isArray(data.lists)) {
+                        data.lists.forEach(list => {
+                            if (!Array.isArray(list)) return;
+                            const key = list.join('||');
+                            if (listSet.has(key)) return;
+                            listSet.add(key);
+                            combined.lists.push([...list]);
+                        });
+                    }
+
+                    if (Array.isArray(data.links)) {
+                        data.links.forEach(link => {
+                            if (!link || typeof link !== 'object') return;
+                            const href = link.href || link.url || '';
+                            const key = `${href}|${link.text || ''}|${link.title || ''}`;
+                            if (linkSet.has(key)) return;
+                            linkSet.add(key);
+                            combined.links.push({
+                                href,
+                                text: link.text || href,
+                                title: link.title || '',
+                                className: link.className || '',
+                                parentText: link.parentText || ''
+                            });
                         });
                     }
                 });
 
-                return data;
-            });
+                return combined;
+            };
+
+            const pageData = mergeDomSnapshots(domSnapshots);
 
             pageMeta.title = pageData.title || pageMeta.title;
             const finalPageTitle = pageMeta.title;
@@ -738,35 +869,10 @@ class NITJSRScraper {
 
             const currentSourceTitle = pageMeta.title;
             const extractedTables = Array.isArray(pageData.tables) ? pageData.tables : [];
-            const mergeTables = (chunks) => {
-                if (!Array.isArray(chunks) || !chunks.length) return [];
-                const firstWithRows = chunks.find(chunk => Array.isArray(chunk?.rows) && chunk.rows.length) || chunks[0];
-                const merged = {
-                    headers: Array.isArray(firstWithRows?.headers) ? firstWithRows.headers : [],
-                    rows: []
-                };
-                chunks.forEach(chunk => {
-                    if (!chunk || typeof chunk !== 'object') return;
-                    const rows = Array.isArray(chunk.rows) ? chunk.rows : [];
-                    rows.forEach(row => {
-                        if (Array.isArray(row)) {
-                            merged.rows.push(row);
-                        }
-                    });
-                });
-                if (!merged.rows.length && !merged.headers.length) {
-                    return [];
-                }
-                return [merged];
-            };
-            const mergedPaginatedTables = (Array.isArray(collectedTables) && collectedTables.length) ? mergeTables(collectedTables) : [];
-            const resolvedTables = (mergedPaginatedTables && mergedPaginatedTables.length) ? mergedPaginatedTables : extractedTables;
-            pageData.tables = resolvedTables;
-
             const tableTextContent = (() => {
-                if (!Array.isArray(resolvedTables)) return [];
+                if (!Array.isArray(extractedTables)) return [];
                 const lines = [];
-                resolvedTables.forEach(table => {
+                extractedTables.forEach(table => {
                     if (!table) return;
                     if (Array.isArray(table)) {
                         table.forEach(row => {
@@ -867,11 +973,12 @@ class NITJSRScraper {
                 headings: pageData.headings,
                 content: allContent,
                 rawContent: pageData.content,
-                tables: (mergedPaginatedTables && mergedPaginatedTables.length) ? mergedPaginatedTables : extractedTables,
+                tables: extractedTables,
                 lists: pageData.lists,
                 links: pageData.links,
                 metadata: pageData.metadata,
                 xhrResponses: xhrEntries,
+                domSnapshots: domSnapshots,
                 category: this.categorizeUrl(url, allContent),
                 wordCount: allContent.split(' ').length
             };
