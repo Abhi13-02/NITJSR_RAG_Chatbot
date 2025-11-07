@@ -21,7 +21,7 @@ class NITJSRScraper {
         this.maxDepth = options.maxDepth || 3;   // Deeper crawling
         this.delay = options.delay || 1500;
         this.baseUrl = 'https://nitjsr.ac.in';
-        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://nitjsr.ac.in/Notices/Announcements'];
+        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://nitjsr.ac.in/Tender/Active_Tenders'];
         this.priorityQueue = [];
         this.pageXHRCache = new Map();
         this.excludeUrls = new Set(['https://nitjsr.ac.in']);
@@ -181,7 +181,7 @@ class NITJSRScraper {
 
     getCategoryMaxAgeMonths(category = '') {
         const c = String(category || '').toLowerCase();
-        if (c === 'tender') return 6;
+        if (c === 'tender') return 1;
         if (c === 'notices' || c === 'notice' || c === 'notification' || c === 'notifications' || c=='recruitments') return 12;
         return null; // no limit for other categories
     }
@@ -333,7 +333,7 @@ class NITJSRScraper {
                 const entries = extractUrlEntries(xml);
                 if (entries && entries.length) {
                     const now = new Date();
-                    const cutoffTender = this.monthsAgo(6);
+                    const cutoffTender = this.monthsAgo(1);
                     const cutoffNotices = this.monthsAgo(12);
                     for (const e of entries) {
                         try {
@@ -1159,7 +1159,6 @@ class NITJSRScraper {
                 rawContent: pageData.content,
                 tables: extractedTables,
                 lists: pageData.lists,
-                links: pageData.links,
                 metadata: pageData.metadata,
                 xhrResponses: xhrEntries,
                 domSnapshots: domSnapshots,

@@ -332,9 +332,56 @@ class NITJSRRAGSystem {
 
         console.log(`✅ Built link database with ${this.linkDatabase.size} entries`);
     }
+    
+    buildPageLinkStats(scrapedData = {}) {
+        const stats = new Map();
+        const linkBuckets = scrapedData?.links || {};
+
+        const getOrCreateEntry = (sourceUrl) => {
+            if (!sourceUrl) {
+                return null;
+            }
+            if (!stats.has(sourceUrl)) {
+                stats.set(sourceUrl, {
+                    total: 0,
+                    pdf: 0,
+                    internal: 0,
+                    external: 0,
+                    image: 0
+                });
+            }
+            return stats.get(sourceUrl);
+        };
+
+        const accumulate = (links = [], type) => {
+            if (!Array.isArray(links)) {
+                return;
+            }
+            links.forEach(link => {
+                const entry = getOrCreateEntry(link?.sourceUrl);
+                if (!entry) {
+                    return;
+                }
+                entry.total += 1;
+                if (typeof entry[type] === 'number') {
+                    entry[type] += 1;
+                } else {
+                    entry[type] = 1;
+                }
+            });
+        };
+
+        accumulate(linkBuckets.pdf, 'pdf');
+        accumulate(linkBuckets.internal, 'internal');
+        accumulate(linkBuckets.external, 'external');
+        accumulate(linkBuckets.image, 'image');
+
+        return stats;
+    }
 
     prepareIngestionItems(scrapedData = {}) {
         const items = [];
+        const pageLinkStats = this.buildPageLinkStats(scrapedData);
         const pages = scrapedData.pages || [];
         for (const page of pages) {
             const xhrText = extractTextFromXhrResponses(page?.xhrResponses || []);
@@ -362,6 +409,10 @@ class NITJSRRAGSystem {
             const hasXhr = Boolean(xhrText);
             const combinedWordCount = countWords(structuredText);
 
+            const linkStats = pageLinkStats.get(page.url) 
+                ? { ...pageLinkStats.get(page.url) } 
+                : { total: 0, pdf: 0, internal: 0, external: 0, image: 0 };
+
             const metadataBase = {
                 source: 'webpage',
                 sourceType: 'page',
@@ -371,7 +422,8 @@ class NITJSRRAGSystem {
                 category: page.category || 'general',
                 depth: page.depth || 0,
                 wordCount: combinedWordCount || page.wordCount || 0,
-                hasLinks: Array.isArray(page.links) && page.links.length > 0,
+                hasLinks: (linkStats.total || 0) > 0,
+                linkStats,
                 hasTables: Array.isArray(page.tables) && page.tables.length > 0,
                 hasLists: Array.isArray(page.lists) && page.lists.length > 0,
                 hasXHR: hasXhr,
@@ -550,6 +602,7 @@ class NITJSRRAGSystem {
             // Handle enhanced scraper data format
             let pagesToProcess = scrapedData.pages || [];
             let pdfsToProcess = scrapedData.documents?.pdfs || [];
+            const pageLinkStats = this.buildPageLinkStats(scrapedData);
 
             console.log(`📊 Processing ${pagesToProcess.length} pages and ${pdfsToProcess.length} PDFs`);
 
@@ -571,6 +624,10 @@ class NITJSRRAGSystem {
                 if (structuredText.trim().length > 100) {
                     const chunks = await this.textSplitter.splitText(structuredText);
                     
+                    const linkStats = pageLinkStats.get(page.url) 
+                        ? { ...pageLinkStats.get(page.url) } 
+                        : { total: 0, pdf: 0, internal: 0, external: 0, image: 0 };
+
                     for (let i = 0; i < chunks.length; i++) {
                         documents.push({
                             id: `page-${docId}-chunk-${i}`,
@@ -586,7 +643,8 @@ class NITJSRRAGSystem {
                                 wordCount: page.wordCount || 0,
                                 chunkIndex: i,
                                 totalChunks: chunks.length,
-                                hasLinks: page.links?.length > 0,
+                                hasLinks: (linkStats.total || 0) > 0,
+                                linkStats,
                                 hasTables: page.tables?.length > 0,
                                 hasLists: page.lists?.length > 0
                             }
