@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NITJSR Chatbot • Admin Panel</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0f172a;
+        --card: #1e293b;
+        --card-light: #f8fafc;
+        --accent: #38bdf8;
+        --text: #e2e8f0;
+        --text-dark: #0f172a;
+        --muted: #94a3b8;
+        --border: rgba(148, 163, 184, 0.3);
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont,
+          'Helvetica Neue', sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 32px 24px 8px;
+        text-align: center;
+      }
+      header h1 {
+        margin: 0;
+        font-size: clamp(1.6rem, 2.3vw, 2.3rem);
+        letter-spacing: -0.02em;
+      }
+      header p {
+        margin: 12px auto 0;
+        color: var(--muted);
+        max-width: 720px;
+      }
+      main.layout {
+        width: min(1320px, 95vw);
+        margin: 0 auto 64px;
+        display: grid;
+        grid-template-columns: minmax(220px, 260px) 1fr;
+        gap: 24px;
+      }
+      @media (max-width: 960px) {
+        main.layout {
+          grid-template-columns: 1fr;
+        }
+      }
+      .sidebar {
+        position: sticky;
+        top: 20px;
+        align-self: flex-start;
+      }
+      .sidebar-inner {
+        background: var(--card);
+        border-radius: 18px;
+        padding: 18px;
+        border: 1px solid var(--border);
+      }
+      .sidebar-inner h2 {
+        margin: 0 0 12px;
+        font-size: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+      .endpoint-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .endpoint-nav button {
+        width: 100%;
+        justify-content: flex-start;
+        font-size: 0.9rem;
+        padding: 10px 14px;
+        background: rgba(248, 250, 252, 0.05);
+        border: 1px solid transparent;
+      }
+      .endpoint-nav button:hover {
+        transform: none;
+        box-shadow: none;
+        border-color: rgba(56, 189, 248, 0.4);
+      }
+      .endpoint-nav button.active {
+        border-color: var(--accent);
+        background: rgba(56, 189, 248, 0.15);
+        color: var(--accent);
+      }
+      .endpoint-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 32px;
+      }
+      .endpoint-card {
+        background: var(--card);
+        border-radius: 18px;
+        padding: 28px;
+        border: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      @media (prefers-color-scheme: light) {
+        body {
+          background: #f3f4f6;
+          color: var(--text-dark);
+        }
+        header p,
+        .meta-line,
+        .help-text {
+          color: #475569;
+        }
+        .sidebar-inner,
+        .endpoint-card {
+          background: var(--card-light);
+          border-color: rgba(15, 23, 42, 0.08);
+        }
+        .endpoint-nav button {
+          background: rgba(15, 23, 42, 0.04);
+        }
+      }
+      .method-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        background: rgba(56, 189, 248, 0.15);
+        color: var(--accent);
+        margin-right: 8px;
+      }
+      .endpoint-title {
+        margin: 0;
+        font-size: 1.05rem;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .meta-line {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .description {
+        margin: 0 0 4px;
+        font-size: 0.95rem;
+      }
+      textarea,
+      pre {
+        font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono',
+          Menlo, monospace;
+        width: 100%;
+        border-radius: 14px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.5);
+        color: inherit;
+        font-size: 0.92rem;
+        resize: vertical;
+        min-height: 120px;
+      }
+      @media (prefers-color-scheme: light) {
+        textarea,
+        pre {
+          background: rgba(255, 255, 255, 0.85);
+          color: var(--text-dark);
+        }
+      }
+      textarea:focus {
+        outline: 2px solid var(--accent);
+      }
+      pre {
+        min-height: 120px;
+        max-height: 300px;
+        overflow: auto;
+        margin: 0;
+      }
+      .response-panel {
+        border: 1px dashed var(--border);
+        border-radius: 16px;
+        padding: 10px;
+        @media (prefers-color-scheme: light) {
+          background: rgba(15, 23, 42, 0.03);
+        }
+      }
+      button {
+        align-self: flex-start;
+        border: none;
+        border-radius: 999px;
+        padding: 10px 18px;
+        background: linear-gradient(120deg, #38bdf8, #6366f1);
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(99, 102, 241, 0.25);
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.65;
+      }
+      .status-line {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .help-text {
+        font-size: 0.8rem;
+        margin-top: -4px;
+      }
+      .flex-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .response-meta {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>NITJSR Chatbot • Admin Panel</h1>
+      <p>
+        Trigger server-side jobs, monitor health, and inspect responses for every API exposed by the
+        backend. Edit payloads before sending and view the formatted JSON results inline.
+      </p>
+    </header>
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-inner">
+          <h2>Endpoints</h2>
+          <div id="endpoint-nav" class="endpoint-nav"></div>
+        </div>
+      </aside>
+      <section class="endpoint-column">
+        <div class="endpoint-grid" id="endpoint-grid"></div>
+      </section>
+    </main>
+    <script>
+      const endpoints = [
+        {
+          id: 'health',
+          method: 'GET',
+          path: '/health',
+          title: 'Health Check',
+          description: 'Quick status probe for the API and downstream services.',
+        },
+        {
+          id: 'initialize',
+          method: 'POST',
+          path: '/initialize',
+          title: 'Initialize RAG System',
+          description: 'Validates configuration and primes embeddings + indexes.',
+          sampleBody: {},
+        },
+        {
+          id: 'embed-latest',
+          method: 'POST',
+          path: '/embed-latest',
+          title: 'Embed Latest Dataset',
+          description: 'Loads the newest scrape JSON and re-ingests it into Pinecone + Mongo.',
+          sampleBody: {},
+        },
+        {
+          id: 'scrape',
+          method: 'POST',
+          path: '/scrape',
+          title: 'Scrape (Process Only)',
+          description: 'Runs the enhanced crawler and loads results into Mongo/vector storage.',
+          sampleBody: {
+            force: false,
+            maxPages: 4,
+            maxDepth: 3,
+            priorityUrls: ['https://nitjsr.ac.in/Tender/Active_Tenders'],
+            restrictedUrls: [],
+          },
+        },
+        {
+          id: 'scrape-and-embed',
+          method: 'POST',
+          path: '/scrape-and-embed',
+          title: 'Scrape + Embed',
+          description: 'Full pipeline: crawl website and push results directly into the vector DB.',
+          sampleBody: {
+            force: false,
+            maxPages: 4,
+            maxDepth: 3,
+          },
+        },
+        {
+          id: 'chat',
+          method: 'POST',
+          path: '/chat',
+          title: 'Chat Query',
+          description: 'Send a natural-language query to the Gemini-backed RAG system.',
+          sampleBody: {
+            question: 'What are the latest important notices for students?',
+          },
+        },
+        {
+          id: 'reset-storage',
+          method: 'POST',
+          path: '/reset-storage',
+          title: 'Reset Storage',
+          description: 'Clears Pinecone index, Mongo change ledger, and the in-memory cache.',
+          sampleBody: {},
+        },
+        {
+          id: 'stats',
+          method: 'GET',
+          path: '/stats',
+          title: 'System Stats',
+          description: 'Snapshots Pinecone, Mongo, cache, and scraper metadata.',
+        },
+        {
+          id: 'reindex-preview',
+          method: 'GET',
+          path: '/reindex/preview',
+          title: 'Reindex Preview',
+          description: 'Shows prospective change ledger entries before re-indexing.',
+        },
+        {
+          id: 'sources',
+          method: 'GET',
+          path: '/sources',
+          title: 'Scrape Sources',
+          description: 'Lists available scraped JSON bundles with summaries.',
+        },
+        {
+          id: 'links',
+          method: 'GET',
+          path: '/links',
+          title: 'Link Directory',
+          description: 'Displays categorized link metadata from the last scrape run.',
+        },
+        {
+          id: 'test-gemini',
+          method: 'GET',
+          path: '/test-gemini',
+          title: 'Test Gemini',
+          description: 'Connectivity test against the configured Gemini model.',
+        },
+        {
+          id: 'test-pinecone',
+          method: 'GET',
+          path: '/test-pinecone',
+          title: 'Test Pinecone',
+          description: 'Connectivity and status test for the Pinecone index.',
+        },
+      ];
+
+      const grid = document.getElementById('endpoint-grid');
+      const nav = document.getElementById('endpoint-nav');
+      const navButtons = new Map();
+      const observedCards = [];
+
+      const createTextarea = (value) => {
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.autocapitalize = 'off';
+        textarea.autocomplete = 'off';
+        textarea.spellcheck = false;
+        return textarea;
+      };
+
+      const formatJson = (payload) => {
+        if (payload === undefined || payload === null) return '';
+        if (typeof payload === 'string') return payload;
+        return JSON.stringify(payload, null, 2);
+      };
+
+      endpoints.forEach((endpoint) => {
+        const card = document.createElement('section');
+        card.className = 'endpoint-card';
+        card.id = `endpoint-${endpoint.id}`;
+
+        const title = document.createElement('h2');
+        title.className = 'endpoint-title';
+        title.innerHTML = `<span class="method-chip">${endpoint.method}</span> ${endpoint.title}`;
+        card.appendChild(title);
+
+        const meta = document.createElement('div');
+        meta.className = 'meta-line';
+        meta.textContent = endpoint.path;
+        card.appendChild(meta);
+
+        const desc = document.createElement('p');
+        desc.className = 'description';
+        desc.textContent = endpoint.description;
+        card.appendChild(desc);
+
+        let bodyInput = null;
+        if (endpoint.method !== 'GET' && endpoint.method !== 'HEAD') {
+          const help = document.createElement('p');
+          help.className = 'help-text';
+          help.textContent = 'Request body (JSON). Edit before sending.';
+          card.appendChild(help);
+
+          bodyInput = createTextarea(
+            formatJson(
+              endpoint.sampleBody !== undefined
+                ? endpoint.sampleBody
+                : {
+                    example: 'Add properties here',
+                  }
+            )
+          );
+          card.appendChild(bodyInput);
+        }
+
+        const responsePanel = document.createElement('div');
+        responsePanel.className = 'response-panel';
+        const responseMeta = document.createElement('p');
+        responseMeta.className = 'response-meta';
+        responseMeta.textContent = 'Awaiting request...';
+        const responsePre = document.createElement('pre');
+        responsePre.textContent = '';
+        responsePanel.appendChild(responseMeta);
+        responsePanel.appendChild(responsePre);
+
+        const statusLine = document.createElement('div');
+        statusLine.className = 'status-line';
+        statusLine.textContent = 'Idle';
+
+        const button = document.createElement('button');
+        button.textContent = 'Send Request';
+
+        const sendRequest = async () => {
+          button.disabled = true;
+          responseMeta.textContent = 'Sending...';
+          responsePre.textContent = '';
+          statusLine.textContent = 'Pending';
+
+          const options = {
+            method: endpoint.method,
+            headers: {},
+          };
+
+          if (bodyInput) {
+            const rawBody = bodyInput.value.trim();
+            let parsedBody = {};
+            if (rawBody.length) {
+              try {
+                parsedBody = JSON.parse(rawBody);
+              } catch (error) {
+                responseMeta.textContent = 'Invalid JSON payload';
+                responsePre.textContent = error.message;
+                statusLine.textContent = 'Client error';
+                button.disabled = false;
+                return;
+              }
+            }
+            options.headers['Content-Type'] = 'application/json';
+            options.body = JSON.stringify(parsedBody);
+          }
+
+          const startedAt = performance.now();
+          try {
+            const res = await fetch(endpoint.path, options);
+            const duration = performance.now() - startedAt;
+            const contentType = res.headers.get('content-type') || '';
+            let payload;
+            if (contentType.includes('application/json')) {
+              payload = await res.json();
+            } else {
+              payload = await res.text();
+            }
+
+            responseMeta.textContent = `Status ${res.status} (${duration.toFixed(0)} ms)`;
+            responsePre.textContent = formatJson(payload);
+            statusLine.textContent = res.ok ? 'OK' : 'Error';
+          } catch (error) {
+            responseMeta.textContent = 'Request failed';
+            responsePre.textContent = error?.message || String(error);
+            statusLine.textContent = 'Network error';
+          } finally {
+            button.disabled = false;
+          }
+        };
+
+        button.addEventListener('click', sendRequest);
+
+        card.appendChild(button);
+        card.appendChild(statusLine);
+        card.appendChild(responsePanel);
+
+        grid.appendChild(card);
+        observedCards.push(card);
+
+        const navBtn = document.createElement('button');
+        navBtn.type = 'button';
+        navBtn.textContent = endpoint.title;
+        navBtn.addEventListener('click', () => {
+          document.getElementById(card.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          navButtons.forEach((btn) => btn.classList.remove('active'));
+          navBtn.classList.add('active');
+        });
+        nav.appendChild(navBtn);
+        navButtons.set(card.id, navBtn);
+        if (navButtons.size === 1) {
+          navBtn.classList.add('active');
+        }
+      });
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            const btn = navButtons.get(entry.target.id);
+            if (!btn) return;
+            if (entry.isIntersecting) {
+              navButtons.forEach((button) => button.classList.remove('active'));
+              btn.classList.add('active');
+            }
+          });
+        },
+        { threshold: 0.4 }
+      );
+
+      observedCards.forEach((card) => observer.observe(card));
+    </script>
+  </body>
+</html>

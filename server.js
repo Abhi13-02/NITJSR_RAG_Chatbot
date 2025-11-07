@@ -125,6 +125,34 @@ class NITJSRServer {
     }
   }
 
+  buildScrapeOptions(payload = {}) {
+    if (!payload || typeof payload !== 'object') {
+      return {};
+    }
+
+    const options = {};
+    if (payload.maxPages !== undefined) {
+      options.maxPages = payload.maxPages;
+    }
+
+    const depthValue = payload.maxDepth ?? payload.depth;
+    if (depthValue !== undefined) {
+      options.maxDepth = depthValue;
+    }
+
+    const priorityValue = payload.priorityUrls ?? payload.priorityUrl;
+    if (priorityValue !== undefined) {
+      options.priorityUrls = priorityValue;
+    }
+
+    const restrictedValue = payload.restrictedUrls ?? payload.restrictedUrl;
+    if (restrictedValue !== undefined) {
+      options.restrictedUrls = restrictedValue;
+    }
+
+    return options;
+  }
+
   setupMiddleware() {
     // CORS configuration
     this.app.use(
@@ -332,10 +360,16 @@ class NITJSRServer {
     // Scrape fresh data endpoint
     this.app.post('/scrape', async (req, res) => {
       try {
-        const { force = false } = req.body;
+        const payload = req.body || {};
+        const { force = false } = payload;
+        const scrapeOptions = this.buildScrapeOptions(payload);
+        const hasOverrides = Object.keys(scrapeOptions).length > 0;
 
         console.log('Starting comprehensive data scrape...');
-        const scrapeResult = await this.scraper.scrapeComprehensive();
+        if (hasOverrides) {
+          console.log('[scrape] Runtime overrides:', scrapeOptions);
+        }
+        const scrapeResult = await this.scraper.scrapeComprehensive(scrapeOptions);
 
         // Load and process the scraped data
         const scrapedData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
@@ -349,12 +383,13 @@ class NITJSRServer {
         await this.ensureMongoConnected();
 
         // Process and store new data
-        await this.ragSystem.processAndStoreDocuments(scrapedData);
+        //await this.ragSystem.processAndStoreDocuments(scrapedData);
 
         res.json({
           success: true,
           message: 'Comprehensive data scraped and processed successfully',
           summary: scrapeResult.summary,
+          options: scrapeOptions,
           timestamp: new Date().toISOString(),
           aiProvider: 'Google Gemini',
         });
@@ -367,10 +402,16 @@ class NITJSRServer {
     // Combined scrape and embed endpoint
     this.app.post('/scrape-and-embed', async (req, res) => {
       try {
-        const { force = false } = req.body || {};
+        const payload = req.body || {};
+        const { force = false } = payload;
+        const scrapeOptions = this.buildScrapeOptions(payload);
+        const hasOverrides = Object.keys(scrapeOptions).length > 0;
 
         console.log('[scrape-and-embed] Starting combined scrape + embed...');
-        const scrapeResult = await this.scraper.scrapeComprehensive();
+        if (hasOverrides) {
+          console.log('[scrape-and-embed] Runtime overrides:', scrapeOptions);
+        }
+        const scrapeResult = await this.scraper.scrapeComprehensive(scrapeOptions);
         console.log('[scrape-and-embed] Scrape completed:', scrapeResult?.summary || 'No summary available');
 
         const scrapedData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
@@ -414,6 +455,7 @@ class NITJSRServer {
           message: 'Comprehensive data scraped and embedded successfully',
           timestamp: new Date().toISOString(),
           aiProvider: 'Google Gemini',
+          options: scrapeOptions,
           scrape: {
             summary: scrapeResult.summary,
             brief,
@@ -684,6 +726,10 @@ class NITJSRServer {
     });
 
     // Root endpoint
+    this.app.get('/admin', (req, res) => {
+      res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+    });
+
     this.app.get('/', (req, res) => {
       res.sendFile(path.join(__dirname, 'public', 'index.html'));
     });
@@ -738,35 +784,35 @@ class NITJSRServer {
       await this.ragSystem.initialize();
 
       // Decide whether to (re)embed on init
-      const skipReembedEnv = (process.env.INIT_SKIP_EMBED_IF_INDEX_NOT_EMPTY || 'true').toLowerCase() !== 'false';
-      let shouldEmbedOnInit = true;
-      try {
-        const stats = await this.ragSystem.getIndexStats();
-        if (skipReembedEnv && stats && stats.totalVectors && stats.totalVectors > 0) {
-          console.log(`[init] Skipping re-embedding on initialize: index already has ${stats.totalVectors} vectors`);
-          shouldEmbedOnInit = false;
-        }
-      } catch (e) {
-        console.log('[init] Could not check index stats, proceeding with default initialization path');
-      }
+      // const skipReembedEnv = (process.env.INIT_SKIP_EMBED_IF_INDEX_NOT_EMPTY || 'true').toLowerCase() !== 'false';
+      // let shouldEmbedOnInit = true;
+      // try {
+      //   const stats = await this.ragSystem.getIndexStats();
+      //   if (skipReembedEnv && stats && stats.totalVectors && stats.totalVectors > 0) {
+      //     console.log(`[init] Skipping re-embedding on initialize: index already has ${stats.totalVectors} vectors`);
+      //     shouldEmbedOnInit = false;
+      //   }
+      // } catch (e) {
+      //   console.log('[init] Could not check index stats, proceeding with default initialization path');
+      // }
 
-      if (shouldEmbedOnInit) {
-        // Check for existing scraped data
-        let latestDataBundle = await this.loadLatestScrapedData();
-        let latestData = latestDataBundle?.data;
+      // if (shouldEmbedOnInit) {
+      //   // Check for existing scraped data
+      //   let latestDataBundle = await this.loadLatestScrapedData();
+      //   let latestData = latestDataBundle?.data;
 
-        // If no data exists, perform initial scrape
-        if (!latestData) {
-          console.log('Performing initial comprehensive data scrape...');
-          const scrapeResult = await this.scraper.scrapeComprehensive();
-          latestData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
-        }
+      //   // If no data exists, perform initial scrape
+      //   if (!latestData) {
+      //     console.log('Performing initial comprehensive data scrape...');
+      //     const scrapeResult = await this.scraper.scrapeComprehensive();
+      //     latestData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
+      //   }
 
-        // Process and store documents
-        if (latestData) {
-          await this.ragSystem.processAndStoreDocuments(latestData);
-        }
-      }
+      //   // Process and store documents
+      //   if (latestData) {
+      //     await this.ragSystem.processAndStoreDocuments(latestData);
+      //   }
+      // }
 
       this.isInitialized = true;
       console.log('Gemini RAG system initialization completed successfully!');
