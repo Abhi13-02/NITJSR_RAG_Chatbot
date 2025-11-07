@@ -130,7 +130,7 @@ All endpoints return JSON. When `PORT` differs from 3000, update your curl/brows
 server.js            # Express server + REST API + startup orchestration
 scraper/scraper.js   # Puppeteer crawler (HTML discovery + JSON writer)
 scraper/processPdfs.js # Standalone PDF text/OCR processor for scraped snapshots
-RagSystem.js         # RAG pipeline (Gemini, Cohere, Pinecone, Mongo ledger, caches)
+rag-system/RagSystem.js # RAG pipeline (Gemini, Cohere, Pinecone, Mongo ledger, caches)
 scripts/             # CLI helpers: scrape, embed, serve
 caching/             # Embedding and response caches (Redis-backed with in-memory fallback)
 public/              # Frontend assets served at /
@@ -161,4 +161,4 @@ docker-compose.yml   # Redis instance for local caching
 
 ---
 
-Happy hacking! Once the stack runs locally you can tweak crawler limits, add new data sources, or swap providers as needed. `RagSystem.js` centralizes most of the integration code and is the best starting point for deeper changes.
+Happy hacking! Once the stack runs locally you can tweak crawler limits, add new data sources, or swap providers as needed. `rag-system/RagSystem.js` centralizes most of the integration code and is the best starting point for deeper changes.

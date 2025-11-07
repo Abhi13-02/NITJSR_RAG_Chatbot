@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 dotenv.config();
 
 import { NITJSRScraper } from './scraper/scraper.js';
-import { NITJSRRAGSystem } from './RagSystem.js';
+import { NITJSRRAGSystem } from './rag-system/RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
 
 const summarizePageCategories = (pages = []) => {
