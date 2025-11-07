@@ -439,6 +439,7 @@ class NITJSRRAGSystem {
                 wordCount: combinedWordCount || page.wordCount || 0,
                 buildChunkMetadata: (index, totalChunks) => ({
                     ...metadataBase,
+                    linkStats: JSON.stringify(metadataBase.linkStats || {}),
                     chunkIndex: index,
                     totalChunks,
                 }),
@@ -483,6 +484,7 @@ class NITJSRRAGSystem {
                 wordCount: pdf.wordCount || countWords(structuredPdfText),
                 buildChunkMetadata: (index, totalChunks) => ({
                     ...metadataBase,
+                    linkStats: JSON.stringify(metadataBase.linkStats || {}),
                     chunkIndex: index,
                     totalChunks,
                 }),
@@ -524,6 +526,7 @@ class NITJSRRAGSystem {
                     wordCount: countWords(linkContent),
                     buildChunkMetadata: (index, totalChunks) => ({
                         ...metadataBase,
+                        linkStats: JSON.stringify(metadataBase.linkStats || {}),
                         chunkIndex: index,
                         totalChunks,
                     }),
@@ -576,6 +579,7 @@ class NITJSRRAGSystem {
                 wordCount: countWords(statsContent),
                 buildChunkMetadata: (index, totalChunks) => ({
                     ...metadataBase,
+                    linkStats: JSON.stringify(metadataBase.linkStats || {}),
                     chunkIndex: index,
                     totalChunks,
                 }),
@@ -950,18 +954,11 @@ class NITJSRRAGSystem {
 
             console.log(`[mongo-ledger] Page plan summary: new=${stats.pages.new}, modified=${stats.pages.modified}, unchanged=${stats.pages.unchanged}, toEmbed=${stats.chunks.toEmbed}, toDelete=${stats.chunks.toDelete}.`);
 
+            // we no longer auto-delete pages that were not in this scrape
             const seenUrlsArray = Array.from(seenUrls);
-            let staleUrls = [];
-            try {
-                const staleDocs = await this.pagesColl.find(
-                    { deleted: false, url: { $nin: seenUrlsArray } },
-                    { projection: { url: 1 } }
-                ).toArray();
-                staleUrls = staleDocs.map(doc => doc.url);
-                stats.pages.deletedCandidate = staleUrls.length;
-            } catch (error) {
-                console.warn('[mongo-ledger] failed to compute stale pages:', error?.message || error);
-            }
+            const staleUrls = [];
+            stats.pages.deletedCandidate = 0;
+
 
             if (preview) {
                 console.log('[mongo-ledger] Preview ledger ingestion complete (no writes performed).');
@@ -1105,56 +1102,56 @@ class NITJSRRAGSystem {
                 );
             }
 
-            if (stats.pages.deletedCandidate > 0) {
-                let staleChunkIds = [];
-                try {
-                    const staleChunkDocs = await this.chunksColl.find(
-                        { url: { $in: staleUrls } },
-                        { projection: { chunkId: 1 } }
-                    ).toArray();
-                    staleChunkIds = staleChunkDocs.map(doc => doc.chunkId);
-                } catch (error) {
-                    console.warn('[mongo-ledger] failed to list stale chunks:', error?.message || error);
-                }
+            // if (stats.pages.deletedCandidate > 0) {
+            //     let staleChunkIds = [];
+            //     try {
+            //         const staleChunkDocs = await this.chunksColl.find(
+            //             { url: { $in: staleUrls } },
+            //             { projection: { chunkId: 1 } }
+            //         ).toArray();
+            //         staleChunkIds = staleChunkDocs.map(doc => doc.chunkId);
+            //     } catch (error) {
+            //         console.warn('[mongo-ledger] failed to list stale chunks:', error?.message || error);
+            //     }
 
-                if (staleChunkIds.length) {
-                    staleChunkIds = [...new Set(staleChunkIds)];
-                    if (staleChunkIds.length === 0) {
-                        console.log('[mongo-ledger] No unique IDs to delete.');
-                    } else {
-                        console.log(`[mongo-ledger] Deleting ${staleChunkIds.length} chunk vectors from stale pages.`);
-                        try {
-                            const stats = await this.index.describeIndexStats();
-                            const totalVectors = stats?.totalVectorCount || 0;
-                            if (totalVectors === 0) {
-                                console.log('[mongo-ledger] Skipping deletes: Pinecone index is empty or fresh.');
-                            } else {
-                                const BATCH_SIZE = 500;
-                                for (let i = 0; i < staleChunkIds.length; i += BATCH_SIZE) {
-                                    const batch = staleChunkIds.slice(i, i + BATCH_SIZE);
-                                    await this.index.deleteMany({ ids: batch });
-                                }
-                            }
-                        } catch (error) {
-                            console.warn('[mongo-ledger] Pinecone delete (stale) failed:', error?.message || error);
-                        }
-                        try {
-                            await this.chunksColl.deleteMany({ chunkId: { $in: staleChunkIds } });
-                        } catch (error) {
-                            console.warn('[mongo-ledger] Mongo delete (stale chunks) failed:', error?.message || error);
-                        }
-                    }
-                }
+            //     if (staleChunkIds.length) {
+            //         staleChunkIds = [...new Set(staleChunkIds)];
+            //         if (staleChunkIds.length === 0) {
+            //             console.log('[mongo-ledger] No unique IDs to delete.');
+            //         } else {
+            //             console.log(`[mongo-ledger] Deleting ${staleChunkIds.length} chunk vectors from stale pages.`);
+            //             try {
+            //                 const stats = await this.index.describeIndexStats();
+            //                 const totalVectors = stats?.totalVectorCount || 0;
+            //                 if (totalVectors === 0) {
+            //                     console.log('[mongo-ledger] Skipping deletes: Pinecone index is empty or fresh.');
+            //                 } else {
+            //                     const BATCH_SIZE = 500;
+            //                     for (let i = 0; i < staleChunkIds.length; i += BATCH_SIZE) {
+            //                         const batch = staleChunkIds.slice(i, i + BATCH_SIZE);
+            //                         await this.index.deleteMany({ ids: batch });
+            //                     }
+            //                 }
+            //             } catch (error) {
+            //                 console.warn('[mongo-ledger] Pinecone delete (stale) failed:', error?.message || error);
+            //             }
+            //             try {
+            //                 await this.chunksColl.deleteMany({ chunkId: { $in: staleChunkIds } });
+            //             } catch (error) {
+            //                 console.warn('[mongo-ledger] Mongo delete (stale chunks) failed:', error?.message || error);
+            //             }
+            //         }
+            //     }
 
-                try {
-                    await this.pagesColl.updateMany(
-                        { url: { $in: staleUrls } },
-                        { $set: { deleted: true, lastSeenAt: runStartedAt } }
-                    );
-                } catch (error) {
-                    console.warn('[mongo-ledger] failed to mark stale pages as deleted:', error?.message || error);
-                }
-            }
+            //     try {
+            //         await this.pagesColl.updateMany(
+            //             { url: { $in: staleUrls } },
+            //             { $set: { deleted: true, lastSeenAt: runStartedAt } }
+            //         );
+            //     } catch (error) {
+            //         console.warn('[mongo-ledger] failed to mark stale pages as deleted:', error?.message || error);
+            //     }
+            // }
 
             const durationMs = Date.now() - runStartTimestamp;
             console.log(`[mongo-ledger] Ledger ingestion completed in ${durationMs} ms. Pages seen=${seenUrls.size}, embedded=${embeddedUrls.size}, deletes=${stats.chunks.toDelete}.`);
