@@ -1762,7 +1762,7 @@ class NITJSRScraper {
         }
       }
 
-    //   await this.processPDFDocuments();
+      await this.processPDFDocuments();
 
       this.updateStatistics();
 
