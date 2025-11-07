@@ -4,12 +4,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import puppeteer from "puppeteer";
 import axios from "axios";
-import pdfParse from "pdf-parse";
 import zlib from "zlib";
-
-import { exec as _exec } from "child_process";
-import { promisify } from "util";
-const exec = promisify(_exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1454,204 +1449,6 @@ class NITJSRScraper {
     }
   }
 
-  // fast text extractor (your old behavior, just wrapped)
-  async extractPdfText(buffer, pdfUrl = "") {
-    let text = "";
-    let pages = 0;
-    try {
-      const parsed = await pdfParse(buffer);
-      text = parsed.text || "";
-      pages = parsed.numpages || 0;
-    } catch (e) {
-      console.error(`⚠️ pdf-parse failed for ${pdfUrl}:`, e.message);
-    }
-
-    // if text is tiny, assume it's scanned
-    const needsOCR = !text || text.trim().length < 40;
-    return { text, pages, needsOCR };
-  }
-
-  // OCR using local CLI tools: pdftoppm + tesseract
-  async ocrPdfBuffer(buffer, pdfUrl = "") {
-    // we'll write temp files next to this script
-    const tmpBase = path.join(
-      __dirname,
-      `tmp_ocr_${Date.now()}_${Math.random().toString(16).slice(2)}`
-    );
-    const pdfPath = `${tmpBase}.pdf`;
-    const imgPath = `${tmpBase}-1.png`; // pdftoppm will output this with -singlefile
-    const txtPath = `${tmpBase}.txt`;
-
-    try {
-      // 1) write pdf to disk
-      await fs.writeFile(pdfPath, buffer);
-
-      // 2) convert first page to png
-      // -f 1 -l 1 → only first page
-      // -singlefile → name ends with -1
-      await exec(`pdftoppm -f 1 -l 1 -png "${pdfPath}" "${tmpBase}"`);
-
-      // 3) run tesseract on that image
-      await exec(`tesseract "${imgPath}" "${tmpBase}" -l eng`);
-
-      // 4) read the text back
-      const ocrText = await fs.readFile(txtPath, "utf8");
-      return ocrText.trim();
-    } catch (err) {
-      console.error(`❌ Local OCR failed for ${pdfUrl}:`, err.message);
-      return "";
-    } finally {
-      // best-effort cleanup – remove everything that could have been created
-      const extraCandidates = [
-        pdfPath,
-        imgPath,
-        txtPath,
-        `${tmpBase}.log`, // some tesseract builds drop a log
-        `${tmpBase}.html`, // rare, but keep it safe
-        `${tmpBase}.hocr`,
-        `${tmpBase}.tsv`,
-        `${tmpBase}-1.ppm`, // in case pdftoppm wrote ppm
-        `${tmpBase}.png`, // safety, if any tool wrote plain png
-      ];
-
-      for (const f of extraCandidates) {
-        try {
-          await fs.unlink(f);
-        } catch {}
-      }
-
-      // Additional cleanup for files generated with the same tmp base (covers -01.png, .ppm, etc.)
-      try {
-        const tmpPrefix = path.basename(tmpBase);
-        const entries = await fs.readdir(__dirname);
-        for (const entry of entries) {
-          if (entry.startsWith(tmpPrefix)) {
-            const fullPath = path.join(__dirname, entry);
-            try {
-              await fs.unlink(fullPath);
-            } catch {}
-          }
-        }
-      } catch {}
-    }
-  }
-
-  async processPDFDocuments() {
-    console.log(
-      `🗂️ Processing ${this.pdfUrls.size} discovered PDF documents...`
-    );
-
-    const pdfArray = Array.from(this.pdfUrls);
-    const maxPdfs = pdfArray.length;
-
-    for (let i = 0; i < maxPdfs; i++) {
-      const pdfKey = pdfArray[i];
-      const pdfUrl = this.pdfUrlOriginals.get(pdfKey) || pdfKey;
-      try {
-        console.log(`📄 Processing PDF ${i + 1}/${maxPdfs}: ${pdfUrl}`);
-
-        let pdfText = "";
-        let pdfPages = 0;
-        let pdfBuffer = null;
-
-        // 1) download pdf
-        try {
-          const response = await axios.get(pdfUrl, {
-            responseType: "arraybuffer",
-            timeout: 60000,
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            },
-            maxContentLength: 50 * 1024 * 1024,
-          });
-          pdfBuffer = Buffer.from(response.data);
-        } catch (downloadError) {
-          console.error(
-            `❌ Failed to download PDF ${pdfUrl}:`,
-            downloadError.message
-          );
-        }
-
-        // 2) fast text parse
-        let needsOCR = false;
-        if (pdfBuffer) {
-          const parsed = await this.extractPdfText(pdfBuffer, pdfUrl);
-          pdfText = parsed.text;
-          pdfPages = parsed.pages;
-          needsOCR = parsed.needsOCR;
-        }
-
-        // 3) if it looked scanned → run local OCR
-        if (pdfBuffer) {
-          console.log(
-            `🧐 ${pdfUrl} looks like scanned PDF. Running local OCR...`
-          );
-          const ocrText = await this.ocrPdfBuffer(pdfBuffer, pdfUrl);
-          if (ocrText && ocrText.length > 0) {
-            pdfText = ocrText;
-          }
-        }
-
-        // 4) link info (your old logic)
-        const linkInfo = this.scrapedData.links.pdf.find(
-          (link) => link.url === pdfUrl
-        );
-
-        // 5) categorize
-        const special = this.specialPdfCategory(pdfUrl);
-        const finalCategory = special || this.categorizeUrl(pdfUrl, pdfText);
-
-        // 6) sitemap date (keep as is)
-        let publishedAt = null;
-        try {
-          const key = this.normalizePolicyKey(pdfUrl);
-          const iso =
-            key && this.sitemapPdfPolicy && this.sitemapPdfPolicy.dates
-              ? this.sitemapPdfPolicy.dates.get(key)
-              : null;
-          if (iso) publishedAt = iso;
-        } catch {}
-
-        // 7) build final object (👉 no needsOCR!)
-        const pdfDoc = {
-          url: pdfUrl,
-          title: linkInfo ? linkInfo.text : pdfUrl.split("/").pop(),
-          text: pdfText,
-          pages: pdfPages,
-          category: finalCategory,
-          timestamp: new Date().toISOString(),
-          parentPageUrl: linkInfo ? linkInfo.sourceUrl : "",
-          parentPageTitle: linkInfo ? linkInfo.sourceTitle : "",
-          sourceUrl: linkInfo ? linkInfo.sourceUrl : "",
-          sourceTitle: linkInfo ? linkInfo.sourceTitle : "",
-          wordCount: pdfText ? pdfText.split(/\s+/).filter(Boolean).length : 0,
-          publishedAt: publishedAt || null,
-          publishedAtSource: publishedAt ? "sitemap" : null,
-        };
-
-        // 8) upsert
-        const existingIndex = this.scrapedData.documents.pdfs.findIndex(
-          (doc) => doc.url === pdfUrl
-        );
-        if (existingIndex !== -1) {
-          this.scrapedData.documents.pdfs[existingIndex] = {
-            ...this.scrapedData.documents.pdfs[existingIndex],
-            ...pdfDoc,
-          };
-        } else {
-          this.scrapedData.documents.pdfs.push(pdfDoc);
-        }
-
-        console.log(
-          `✅ Processed PDF: ${pdfDoc.pages} pages, ${pdfDoc.wordCount} words`
-        );
-      } catch (error) {
-        console.error(`❌ Failed to process PDF ${pdfUrl}:`, error.message);
-      }
-    }
-  }
-
   async scrapeComprehensive(runOptions = {}) {
     let restoreOptions = null;
 
@@ -1762,8 +1559,6 @@ class NITJSRScraper {
         }
       }
 
-      await this.processPDFDocuments();
-
       this.updateStatistics();
 
       const result = await this.saveData();
@@ -1813,7 +1608,7 @@ class NITJSRScraper {
   async saveData() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "_");
     const filename = `nitjsr_enhanced_comprehensive_${timestamp}.json`;
-    const filepath = path.join(__dirname, "scraped_data", filename);
+    const filepath = path.resolve(__dirname, "..", "scraped_data", filename);
 
     // Ensure directory exists
     await fs.mkdir(path.dirname(filepath), { recursive: true });

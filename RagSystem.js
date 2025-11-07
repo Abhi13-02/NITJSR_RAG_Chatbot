@@ -1381,6 +1381,116 @@ Answer:`;
         }
     }
 
+    async chatStream(question, precomputedEmbedding = null, onChunk = null) {
+        try {
+            const questionEmbedding = precomputedEmbedding || await this.embeddingCache.getQueryEmbedding(
+                question,
+                async (q) => await this.embeddings.embedQuery(q)
+            );
+            try {
+                const ecStats = this.embeddingCache.getStats();
+                console.log(`[EmbeddingCache] stats hits=${ecStats.hits} misses=${ecStats.misses} backend=${ecStats.backend}`);
+            } catch (_) {}
+            const relevantDocs = await this.queryDocuments(question, 8, questionEmbedding);
+            if (relevantDocs.length === 0) {
+                const fallback = "I don't have specific information about that topic in the NIT Jamshedpur data. Could you please rephrase your question or ask about placements, academics, faculty, departments, or other college-related topics?";
+                if (typeof onChunk === 'function') {
+                    try {
+                        onChunk(fallback);
+                    } catch (_) {}
+                }
+                return {
+                    answer: fallback,
+                    sources: [],
+                    relevantLinks: [],
+                    confidence: 0
+                };
+            }
+            const relevantLinks = this.findRelevantLinks(question, relevantDocs);
+            const context = relevantDocs
+                .map((doc, index) => {
+                    const sourceInfo = doc.metadata.sourceType === 'pdf_document'
+                        ? `[PDF Document ${index + 1}: ${doc.metadata.title} (${doc.metadata.pages} pages)]`
+                        : `[Page ${index + 1}: ${doc.metadata.title}]`;
+                    return `${sourceInfo} ${doc.text}`;
+                })
+                                .join('\n\n');
+            const linksContext = relevantLinks.length > 0
+                ? `
+Relevant Links Available:
+${relevantLinks.map(link =>
+                    `• ${link.text}: ${link.url} ${link.type === 'pdf' ? '(PDF Document)' : '(Web Page)'}`
+                                    ).join('\n')}`
+                : '';
+            const prompt = `You are an AI assistant specializing in NIT Jamshedpur information. Use the provided context to answer questions accurately and helpfully.
+Context:
+${context || 'No relevant context found.'}${linksContext}
+Question: ${question}
+Instructions:
+- Answer based primarily on the provided context
+- If the context doesn't contain enough information, state that clearly
+- Provide specific data points when available (percentages, package amounts, company names)
+- Be comprehensive but well-structured
+- When mentioning statistics, provide the source or timeframe when available
+- If relevant links are available, mention them in your response
+- For PDF documents, specify the document name and that it's a PDF
+- Include direct URLs when they would be helpful to the user
+- Format your response clearly with proper structure
+- If asked about documents or PDFs, provide the actual links when available
+Answer:`;
+            const streamResult = await this.chatModel.generateContentStream(prompt);
+            let fullText = '';
+            if (streamResult?.stream) {
+                for await (const chunk of streamResult.stream) {
+                    const part = typeof chunk?.text === 'function' ? chunk.text() : chunk?.text;
+                    if (part) {
+                        fullText += part;
+                        if (typeof onChunk === 'function') {
+                            try {
+                                onChunk(part);
+                            } catch (_) {}
+                        }
+                    }
+                }
+            }
+            if (!fullText && streamResult?.response) {
+                try {
+                    fullText = streamResult.response.text() || '';
+                } catch (_) {}
+            }
+            const enhancedSources = relevantDocs.map(doc => ({
+                text: doc.text.substring(0, 200) + '...',
+                source: doc.metadata.source,
+                sourceType: doc.metadata.sourceType,
+                url: doc.metadata.url,
+                title: doc.metadata.title,
+                score: doc.score,
+                pages: doc.metadata.pages,
+                category: doc.metadata.category
+            }));
+            relevantLinks.forEach(link => {
+                enhancedSources.push({
+                    text: link.context || link.text,
+                    source: link.type,
+                    sourceType: 'link',
+                    url: link.url,
+                    title: link.text,
+                    score: 0.8,
+                    category: 'link'
+                });
+            });
+            return {
+                answer: fullText,
+                sources: enhancedSources,
+                relevantLinks,
+                confidence: relevantDocs.length > 0 ? relevantDocs[0].score : 0
+            };
+        } catch (error) {
+            console.error('⚠️ Chat stream error:', error.message);
+            throw error;
+        }
+    }
+
    // RagSystem.js — replace your getIndexStats() with this minimal fix
     async getIndexStats() {
     try {
