@@ -21,7 +21,7 @@ class NITJSRScraper {
         this.maxDepth = options.maxDepth || 3;   // Deeper crawling
         this.delay = options.delay || 1500;
         this.baseUrl = 'https://nitjsr.ac.in';
-        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://www.nitjsr.ac.in/Notices/Archive_Notices'];
+        this.priorityUrls = Array.isArray(options.priorityUrls) ? options.priorityUrls : ['https://nitjsr.ac.in/Notices/Announcements'];
         this.priorityQueue = [];
         this.pageXHRCache = new Map();
         this.excludeUrls = new Set(['https://nitjsr.ac.in']);
@@ -64,6 +64,12 @@ class NITJSRScraper {
                 totalLinks: 0,
                 categorizedPages: 0
             }
+        };
+
+        // Allowlist for eligible tender/notices PDFs from sitemap
+        this.sitemapPdfPolicy = {
+            allow: new Set(), // normalized lowercase URLs allowed by date policy
+            dates: new Map()  // normalized lowercase URL -> ISO date string (from sitemap lastmod or HEAD)
         };
     }
 
@@ -165,6 +171,43 @@ class NITJSRScraper {
         return 'general';
     }
 
+    // --- Helpers for sitemap-based PDF policy ---
+    monthsAgo(months = 0) {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        d.setMonth(d.getMonth() - Number(months || 0));
+        return d;
+    }
+
+    getCategoryMaxAgeMonths(category = '') {
+        const c = String(category || '').toLowerCase();
+        if (c === 'tender') return 6;
+        if (c === 'notices' || c === 'notice' || c === 'notification' || c === 'notifications' || c=='recruitments') return 12;
+        return null; // no limit for other categories
+    }
+
+    specialPdfCategory(url) {
+        const lower = String(url || '').toLowerCase();
+        if (lower.includes('/backend/uploads/tender/')) return 'tender';
+        if (lower.includes('/backend/uploads/notices/')) return 'notices';
+        if (lower.includes('/backend/uploads/recruitments/')) return 'notices';
+        return null;
+    }
+
+    normalizePolicyKey(url) {
+        const n = this.normalizeForComparison(url);
+        return n || (typeof url === 'string' ? url.trim().toLowerCase() : null);
+    }
+
+    isPdfAllowedByPolicy(url, category) {
+        const cat = (category || this.specialPdfCategory(url) || '').toLowerCase();
+        if (cat === 'tender' || cat === 'notices') {
+            const key = this.normalizePolicyKey(url);
+            return !!(key && this.sitemapPdfPolicy && this.sitemapPdfPolicy.allow && this.sitemapPdfPolicy.allow.has(key));
+        }
+        return true; // other categories unfiltered
+    }
+
     isValidUrl(url) {
         try {
             const urlObj = new URL(url, this.baseUrl);
@@ -254,6 +297,24 @@ class NITJSRScraper {
             return locs;
         };
 
+        const extractUrlEntries = (xml) => {
+            if (!xml) return [];
+            const entries = [];
+            const re = /<url>([\s\S]*?)<\/url>/gi;
+            let m;
+            while ((m = re.exec(xml)) !== null) {
+                const block = m[1];
+                const locMatch = /<loc>\s*([^<\s]+)\s*<\/loc>/i.exec(block);
+                if (!locMatch) continue;
+                const lastmodMatch = /<lastmod>\s*([^<]+)\s*<\/lastmod>/i.exec(block);
+                entries.push({
+                    loc: locMatch[1].trim(),
+                    lastmod: lastmodMatch ? lastmodMatch[1].trim() : null
+                });
+            }
+            return entries;
+        };
+
         const handleSitemap = async (url) => {
             const xml = await fetchXml(url);
             if (!xml) return;
@@ -267,8 +328,61 @@ class NITJSRScraper {
                 return;
             }
 
-            // If it's a urlset, collect URLs
+            // If it's a urlset, collect URLs with optional lastmod
             if (/<urlset[\s>]/i.test(xml)) {
+                const entries = extractUrlEntries(xml);
+                if (entries && entries.length) {
+                    const now = new Date();
+                    const cutoffTender = this.monthsAgo(6);
+                    const cutoffNotices = this.monthsAgo(12);
+                    for (const e of entries) {
+                        try {
+                            const fullUrl = new URL(e.loc, this.baseUrl).href;
+                            const isPdf = fullUrl.toLowerCase().endsWith('.pdf');
+                            if (!isPdf) {
+                                discovered.add(fullUrl);
+                                continue;
+                            }
+
+                            // Only enforce policy for backend tender/notices PDFs
+                            const special = this.specialPdfCategory(fullUrl);
+                            if (special === 'tender' || special === 'notices') {
+                                let ok = false;
+                                if (e.lastmod) {
+                                    const d = new Date(e.lastmod);
+                                    if (!isNaN(d)) {
+                                        if ((special === 'tender' && d >= cutoffTender) || (special === 'notices' && d >= cutoffNotices)) {
+                                            ok = true;
+                                            const key = this.normalizePolicyKey(fullUrl);
+                                            if (key) {
+                                                this.sitemapPdfPolicy.allow.add(key);
+                                                this.sitemapPdfPolicy.dates.set(key, d.toISOString());
+                                            }
+                                        }
+                                    }
+                                }
+                                // If lastmod missing or invalid, do not allow by strict sitemap policy
+                                if (!ok) {
+                                    // skip
+                                }
+                            } else {
+                                // Other PDFs: no policy gating, but record date if present for enrichment
+                                if (e.lastmod) {
+                                    const d = new Date(e.lastmod);
+                                    if (!isNaN(d)) {
+                                        const key = this.normalizePolicyKey(fullUrl);
+                                        if (key) this.sitemapPdfPolicy.dates.set(key, d.toISOString());
+                                    }
+                                }
+                            }
+                        } catch {
+                            // ignore bad url entries
+                        }
+                    }
+                    return;
+                }
+
+                // Fallback when there are only <loc> tags
                 const urls = extractLocs(xml);
                 for (const u of urls) discovered.add(u);
                 return;
@@ -317,7 +431,7 @@ class NITJSRScraper {
         };
         const addPdfFromItem = (item) => {
             if (!item || typeof item !== 'object') return;
-            const candidateFields = ['link', 'url', 'file', 'document'];
+            const candidateFields = ['link', 'url', 'file', 'document', 'path'];
             let pdfValue = null;
             for (const field of candidateFields) {
                 const value = item[field];
@@ -341,6 +455,58 @@ class NITJSRScraper {
             } catch {
                 return;
             }
+            // Determine category and apply item-based date policy for tenders/notices
+            const special = this.specialPdfCategory(pdfUrl);
+            let policyCat = special || null;
+            try {
+                if (!policyCat && Array.isArray(item.notification_for)) {
+                    const tags = item.notification_for.map(String).map(s => s.toLowerCase());
+                    if (tags.includes('announcement') || tags.includes('notice') || tags.includes('notifications') || tags.includes('recruitments')) {
+                        policyCat = 'notices';
+                    }
+                }
+            } catch {}
+            const preCat = policyCat || this.categorizeUrl(pdfUrl, `${item?.title || ''} ${item?.notification || ''}`.trim());
+
+            const getDateFromItem = (obj) => {
+                if (!obj || typeof obj !== 'object') return null;
+                const keys = ['time', 'date', 'idate', 'published_on', 'created_at', 'updated_at', 'end_time'];
+                for (const k of keys) {
+                    const v = obj[k];
+                    if (v == null) continue;
+                    if (typeof v === 'number') {
+                        const ms = v > 1e12 ? v : v * 1000;
+                        const d = new Date(ms);
+                        if (!isNaN(d)) return d;
+                        continue;
+                    }
+                    if (typeof v === 'string') {
+                        const t = v.trim();
+                        if (!t) continue;
+                        if (/^\d{10,}$/.test(t)) {
+                            const n = parseInt(t, 10);
+                            const ms = n > 1e12 ? n : n * 1000;
+                            const d = new Date(ms);
+                            if (!isNaN(d)) return d;
+                        }
+                        const d = new Date(t);
+                        if (!isNaN(d)) return d;
+                    }
+                }
+                return null;
+            };
+            const itemDate = getDateFromItem(item);
+            if ((preCat === 'tender' || preCat === 'notices' || preCat=="recruitments") && itemDate) {
+                const months = this.getCategoryMaxAgeMonths(preCat);
+                if (months) {
+                    const cutoff = this.monthsAgo(months);
+                    if (itemDate < cutoff) {
+                        // Skip old tender/notice per item-provided date
+                        return;
+                    }
+                }
+            }
+
             const titleCandidates = [
                 item.title,
                 item.name,
@@ -371,7 +537,7 @@ class NITJSRScraper {
                 title: pdfTitle,
                 text: textContent,
                 pages: 0,
-                category: this.categorizeUrl(pdfUrl, `${pdfTitle} ${textContent}`.trim()),
+                category: preCat,
                 timestamp,
                 parentPageUrl: pageUrl,
                 parentPageTitle: parentTitle,
@@ -379,6 +545,22 @@ class NITJSRScraper {
                 sourceTitle: parentTitle,
                 wordCount
             };
+
+            // Attach publishedAt from item when available
+            if (itemDate && !isNaN(itemDate)) {
+                pdfDoc.publishedAt = itemDate.toISOString();
+                pdfDoc.publishedAtSource = 'item';
+            } else {
+                // fallback to sitemap date if we have one
+                try {
+                    const key = this.normalizePolicyKey(pdfUrl);
+                    const iso = key && this.sitemapPdfPolicy && this.sitemapPdfPolicy.dates ? this.sitemapPdfPolicy.dates.get(key) : null;
+                    if (iso) {
+                        pdfDoc.publishedAt = iso;
+                        pdfDoc.publishedAtSource = 'sitemap';
+                    }
+                } catch {}
+            }
 
             const existingIndex = this.scrapedData.documents.pdfs.findIndex(doc => doc.url === pdfUrl);
             if (existingIndex !== -1) {
@@ -394,7 +576,9 @@ class NITJSRScraper {
                     parentPageUrl: pdfDoc.parentPageUrl || existing.parentPageUrl,
                     parentPageTitle: pdfDoc.parentPageTitle || existing.parentPageTitle,
                     sourceUrl: pdfDoc.sourceUrl || existing.sourceUrl,
-                    sourceTitle: pdfDoc.sourceTitle || existing.sourceTitle
+                    sourceTitle: pdfDoc.sourceTitle || existing.sourceTitle,
+                    publishedAt: pdfDoc.publishedAt || existing.publishedAt || null,
+                    publishedAtSource: pdfDoc.publishedAtSource || existing.publishedAtSource || null
                 };
             } else {
                 this.scrapedData.documents.pdfs.push(pdfDoc);
@@ -1000,6 +1184,7 @@ class NITJSRScraper {
                     };
 
                     if (hrefLower.includes('.pdf')) {
+                        // Include PDFs discovered via page links unconditionally; item-based gating happens for XHR-fed entries
                         if (!this.scrapedData.links.pdf.some(existing => existing.url === fullUrl && existing.sourceUrl === url)) {
                             this.scrapedData.links.pdf.push(linkData);
                         }
@@ -1077,19 +1262,32 @@ class NITJSRScraper {
                 
                 // Find the link information for this PDF
                 const linkInfo = this.scrapedData.links.pdf.find(link => link.url === pdfUrl);
+                // Prefer special category if path indicates tender/notices
+                const special = this.specialPdfCategory(pdfUrl);
+                const finalCategory = special || this.categorizeUrl(pdfUrl, pdfText);
+
+                // Pull published date from sitemap policy if available
+                let publishedAt = null;
+                try {
+                    const key = this.normalizePolicyKey(pdfUrl);
+                    const iso = key && this.sitemapPdfPolicy && this.sitemapPdfPolicy.dates ? this.sitemapPdfPolicy.dates.get(key) : null;
+                    if (iso) publishedAt = iso;
+                } catch {}
                 
                 const pdfDoc = {
                     url: pdfUrl,
                     title: linkInfo ? linkInfo.text : pdfUrl.split('/').pop(),
                     text: pdfText,
                     pages: pdfPages,
-                    category: this.categorizeUrl(pdfUrl, pdfText),
+                    category: finalCategory,
                     timestamp: new Date().toISOString(),
                     parentPageUrl: linkInfo ? linkInfo.sourceUrl : '',
                     parentPageTitle: linkInfo ? linkInfo.sourceTitle : '',
                     sourceUrl: linkInfo ? linkInfo.sourceUrl : '',
                     sourceTitle: linkInfo ? linkInfo.sourceTitle : '',
-                    wordCount: pdfText ? pdfText.split(' ').length : 0
+                    wordCount: pdfText ? pdfText.split(' ').length : 0,
+                    publishedAt: publishedAt || null,
+                    publishedAtSource: publishedAt ? 'sitemap' : null
                 };
 
                 const existingIndex = this.scrapedData.documents.pdfs.findIndex(doc => doc.url === pdfUrl);
@@ -1106,7 +1304,9 @@ class NITJSRScraper {
                         parentPageUrl: pdfDoc.parentPageUrl || existing.parentPageUrl,
                         parentPageTitle: pdfDoc.parentPageTitle || existing.parentPageTitle,
                         sourceUrl: pdfDoc.sourceUrl || existing.sourceUrl,
-                        sourceTitle: pdfDoc.sourceTitle || existing.sourceTitle
+                        sourceTitle: pdfDoc.sourceTitle || existing.sourceTitle,
+                        publishedAt: pdfDoc.publishedAt || existing.publishedAt || null,
+                        publishedAtSource: pdfDoc.publishedAtSource || existing.publishedAtSource || null
                     };
                 } else {
                     this.scrapedData.documents.pdfs.push(pdfDoc);
