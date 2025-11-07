@@ -117,6 +117,82 @@
             return await response.json();
         },
 
+        async sendMessageStream(question, onChunk, onDone) {
+            const response = await fetch(`${API_BASE}/chat-stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ question })
+            });
+
+            if (!response.ok) {
+                let errorPayload = {};
+                try {
+                    errorPayload = await response.json();
+                } catch (_) {}
+                throw new Error(errorPayload.error || `Request failed with status ${response.status}`);
+            }
+
+            if (!response.body) {
+                throw new Error('Streaming not supported in this browser');
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop() || '';
+
+                    for (const part of parts) {
+                        if (!part.trim()) continue;
+                        const lines = part.split('\n').filter(Boolean);
+                        const eventLine = lines.find((line) => line.startsWith('event:'));
+                        const dataLines = lines.filter((line) => line.startsWith('data:'));
+                        if (!eventLine || dataLines.length === 0) continue;
+
+                        const event = eventLine.replace('event:', '').trim();
+                        let payload = null;
+                        try {
+                            payload = JSON.parse(
+                                dataLines.map((line) => line.replace('data:', '').trim()).join('\n')
+                            );
+                        } catch (_) {
+                            continue;
+                        }
+
+                        if (event === 'chunk') {
+                            if (onChunk && typeof onChunk === 'function') {
+                                onChunk(payload?.text || '');
+                            }
+                        } else if (event === 'end') {
+                            if (onDone && typeof onDone === 'function') {
+                                onDone(payload || {});
+                            }
+                            await reader.cancel().catch(() => {});
+                            return payload || {};
+                        } else if (event === 'error') {
+                            await reader.cancel().catch(() => {});
+                            throw new Error(payload?.error || 'Streaming error');
+                        }
+                    }
+                }
+
+                buffer += decoder.decode();
+            } finally {
+                reader.releaseLock();
+            }
+
+            return null;
+        },
+
         async scrapeData(force = true) {
             const response = await fetch(`${API_BASE}/scrape`, {
                 method: 'POST',
@@ -216,37 +292,11 @@
 
             const avatar = sender === 'bot' ? 'AI' : 'U';
 
-            let confidenceHTML = '';
-            if (sender === 'bot' && confidence > 0) {
-                const confidencePercent = Math.round(confidence * 100);
-                let confidenceClass = 'low';
-                if (confidence > 0.8) confidenceClass = 'high';
-                else if (confidence > 0.6) confidenceClass = 'medium';
+            const confidenceHTML = sender === 'bot'
+                ? this.buildConfidenceMetadata(confidence, timestamp)
+                : '';
 
-                confidenceHTML = `
-                    <div class="message-metadata">
-                        <span>Response generated at ${timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString()}</span>
-                        <span class="confidence-score ${confidenceClass}">
-                            Confidence: ${confidencePercent}%
-                        </span>
-                    </div>
-                `;
-            }
-
-            let sourcesHTML = '';
-            if (sources && sources.length > 0) {
-                sourcesHTML = `
-                    <div class="message-sources">
-                        <strong>Sources (${sources.length}):</strong><br>
-                        ${sources.map((source, index) =>
-                    `<a href="${source.url || '#'}" class="source-link" target="_blank" title="${source.text || ''}">
-                                ${index + 1}. ${source.source || source.title || 'Document'}
-                                ${source.score ? `(${Math.round(source.score * 100)}% match)` : ''}
-                            </a>`
-                ).join('')}
-                    </div>
-                `;
-            }
+            const sourcesHTML = this.renderSourcesList(sources);
 
             const formattedContent = sender === 'bot' ? this.formatResponse(content) : content.replace(/\n/g, '<br>');
 
@@ -296,6 +346,40 @@
             if (inList) formattedLines.push('</ul>');
             
             return formattedLines.join('\n').replace(/<p>\s*<\/p>/g, '');
+        },
+
+        renderSourcesList(sources = []) {
+            if (!sources || sources.length === 0) return '';
+            return `
+                <div class="message-sources">
+                    <strong>Sources (${sources.length}):</strong><br>
+                    ${sources.map((source, index) =>
+                        `<a href="${source.url || '#'}" class="source-link" target="_blank" title="${source.text || ''}">
+                            ${index + 1}. ${source.source || source.title || 'Document'}
+                            ${source.score ? `(${Math.round(source.score * 100)}% match)` : ''}
+                        </a>`
+                    ).join('')}
+                </div>
+            `;
+        },
+
+        buildConfidenceMetadata(confidence = 0, timestamp = null) {
+            if (!(confidence > 0)) return '';
+            const confidencePercent = Math.round(confidence * 100);
+            let confidenceClass = 'low';
+            if (confidence > 0.8) confidenceClass = 'high';
+            else if (confidence > 0.6) confidenceClass = 'medium';
+            const timeLabel = timestamp
+                ? new Date(timestamp).toLocaleTimeString()
+                : new Date().toLocaleTimeString();
+            return `
+                <div class="message-metadata">
+                    <span>Response generated at ${timeLabel}</span>
+                    <span class="confidence-score ${confidenceClass}">
+                        Confidence: ${confidencePercent}%
+                    </span>
+                </div>
+            `;
         }
     };
 
@@ -485,17 +569,51 @@ These sources contain placement data including statistics, company information, 
             State.setLoading(true);
             UI.disableInput();
 
-            try {
-                const data = await API.sendMessage(message);
+            const botDiv = document.createElement('div');
+            botDiv.className = 'message bot';
+            botDiv.innerHTML = `
+                <div class="message-avatar">AI</div>
+                <div class="message-content">
+                    <div class="live-response"></div>
+                    <div class="live-sources"></div>
+                    <div class="live-metadata"></div>
+                </div>
+            `;
+            UI.elements.chatMessages.appendChild(botDiv);
+            UI.scrollToBottom();
 
-                if (data.success) {
-                    UI.addMessage('bot', data.answer, data.sources, data.confidence, data.timestamp);
-                } else {
-                    UI.addMessage('bot', Messages.connectionError(data.error));
-                }
+            const liveResponse = botDiv.querySelector('.live-response');
+            const liveSources = botDiv.querySelector('.live-sources');
+            const liveMetadata = botDiv.querySelector('.live-metadata');
+            let fullResponse = '';
+
+            try {
+                await API.sendMessageStream(
+                    message,
+                    (chunk) => {
+                        fullResponse += chunk || '';
+                        liveResponse.innerHTML = UI.formatResponse(fullResponse);
+                        UI.scrollToBottom();
+                    },
+                    (meta) => {
+                        if (meta?.sources) {
+                            liveSources.innerHTML = UI.renderSourcesList(meta.sources);
+                        }
+                        liveMetadata.innerHTML = UI.buildConfidenceMetadata(
+                            meta?.confidence || 0,
+                            new Date().toISOString()
+                        );
+                        UI.scrollToBottom();
+                    }
+                );
             } catch (error) {
                 console.error('Error sending message:', error);
-                UI.addMessage('bot', Messages.requestError());
+                liveResponse.innerHTML = UI.formatResponse(
+                    Messages.connectionError(error?.message || 'Streaming failed')
+                );
+                liveSources.innerHTML = '';
+                liveMetadata.innerHTML = '';
+                UI.scrollToBottom();
             } finally {
                 UI.hideTyping();
                 State.setLoading(false);

@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { NITJSRScraper } from '../scraper.js';
+import { NITJSRScraper } from '../scraper/scraper.js';
 
 function parseArgs(argv) {
   const args = { maxPages: 1, maxDepth: 4, delay: 1500 };

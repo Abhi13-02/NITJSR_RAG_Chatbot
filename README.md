@@ -128,7 +128,8 @@ All endpoints return JSON. When `PORT` differs from 3000, update your curl/brows
 ## Repository layout
 ```
 server.js            # Express server + REST API + startup orchestration
-scraper.js           # Puppeteer crawler and PDF processing
+scraper/scraper.js   # Puppeteer crawler (HTML discovery + JSON writer)
+scraper/processPdfs.js # Standalone PDF text/OCR processor for scraped snapshots
 RagSystem.js         # RAG pipeline (Gemini, Cohere, Pinecone, Mongo ledger, caches)
 scripts/             # CLI helpers: scrape, embed, serve
 caching/             # Embedding and response caches (Redis-backed with in-memory fallback)

@@ -12,7 +12,7 @@ const __dirname = dirname(__filename);
 
 dotenv.config();
 
-import { NITJSRScraper } from './scraper.js';
+import { NITJSRScraper } from './scraper/scraper.js';
 import { NITJSRRAGSystem } from './RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
 
@@ -354,6 +354,106 @@ class NITJSRServer {
       } catch (error) {
         console.error('Chat error:', error);
         res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/chat-stream', async (req, res) => {
+      const { question } = req.body || {};
+
+      if (!question || question.trim().length === 0) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'Question is required and cannot be empty' });
+      }
+
+      if (!this.isInitialized) {
+        return res.status(503).json({
+          success: false,
+          error: 'System not initialized. Please call /initialize first.',
+        });
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+
+      const send = (event, data) => {
+        res.write(`event: ${event}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      let _cacheVector = null;
+
+      try {
+        if (this.responseCache && this.ragSystem?.embeddingCache && this.ragSystem?.embeddings) {
+          const vector = await this.ragSystem.embeddingCache.getQueryEmbedding(
+            question,
+            async (q) => await this.ragSystem.embeddings.embedQuery(q)
+          );
+          _cacheVector = vector;
+          const result = await this.responseCache.getSimilar(vector);
+          if (result?.hit && result.item?.responseText) {
+            console.log(`[ResponseCache] HIT sim=${result.similarity?.toFixed?.(4)} → streaming cached answer`);
+            const meta = result.item.metadata || {};
+            send('chunk', { text: result.item.responseText });
+            send('end', {
+              success: true,
+              question,
+              sources: meta.sources || [],
+              relevantLinks: meta.relevantLinks || [],
+              confidence: typeof meta.confidence === 'number' ? meta.confidence : 0,
+            });
+            return res.end();
+          }
+        }
+      } catch (error) {
+        console.warn('[ResponseCache] lookup (stream) failed:', error?.message || error);
+      }
+
+      try {
+        const finalResponse = await this.ragSystem.chatStream(
+          question,
+          _cacheVector || null,
+          (chunkText) => {
+            if (chunkText) {
+              send('chunk', { text: chunkText });
+            }
+          }
+        );
+
+        try {
+          if (this.responseCache && _cacheVector && finalResponse?.answer) {
+            await this.responseCache.put(_cacheVector, {
+              responseText: finalResponse.answer,
+              question,
+              metadata: {
+                sources: finalResponse.sources || [],
+                relevantLinks: finalResponse.relevantLinks || [],
+                confidence:
+                  typeof finalResponse.confidence === 'number' ? finalResponse.confidence : 0,
+              },
+            });
+          }
+        } catch (cacheError) {
+          console.warn('[ResponseCache] put (stream) failed:', cacheError?.message || cacheError);
+        }
+
+        send('end', {
+          success: true,
+          question,
+          sources: finalResponse?.sources || [],
+          relevantLinks: finalResponse?.relevantLinks || [],
+          confidence:
+            typeof finalResponse?.confidence === 'number' ? finalResponse.confidence : 0,
+        });
+        res.end();
+      } catch (error) {
+        console.error('chat-stream error:', error);
+        send('error', { error: error?.message || 'Failed to stream response' });
+        res.end();
       }
     });
 
