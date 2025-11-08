@@ -95,6 +95,22 @@
         } catch (_) { return false; }
     })();
 
+    function getOrCreateSessionId() {
+        const STORAGE_KEY = 'nitjsr_session_id';
+        try {
+            const existing = localStorage.getItem(STORAGE_KEY);
+            if (existing) return existing;
+            const random = (window.crypto && window.crypto.randomUUID)
+                ? window.crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const sessionId = `web-${random}`;
+            localStorage.setItem(STORAGE_KEY, sessionId);
+            return sessionId;
+        } catch (_) {
+            return `web-fallback-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
+    }
+
     const API = {
         async healthCheck() {
             const response = await fetch(`${API_BASE}/health`);
@@ -106,24 +122,15 @@
             return await response.json();
         },
 
-        async sendMessage(question) {
-            const response = await fetch(`${API_BASE}/chat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ question })
-            });
-            return await response.json();
-        },
-
         async sendMessageStream(question, onChunk, onDone) {
+            const sessionId = getOrCreateSessionId();
             const response = await fetch(`${API_BASE}/chat-stream`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'x-session-id': sessionId,
                 },
-                body: JSON.stringify({ question })
+                body: JSON.stringify({ question, sessionId })
             });
 
             if (!response.ok) {
