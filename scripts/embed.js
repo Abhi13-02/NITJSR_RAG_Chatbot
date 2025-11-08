@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import { NITJSRRAGSystem } from '../RagSystem.js';
+import { NITJSRRAGSystem } from '../rag-system/RagSystem.js';
 import { MongoClient } from 'mongodb';
 
 const __filename = fileURLToPath(import.meta.url);
