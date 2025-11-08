@@ -17,6 +17,7 @@ dotenv.config();
 import { NITJSRScraper } from './scraper/scraper.js';
 import { NITJSRRAGSystem } from './rag-system/RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
+import { ChatHistory } from './caching/chatHistory.js';
 
 const summarizePageCategories = (pages = []) => {
   const counts = pages.reduce((acc, page) => {
@@ -50,6 +51,13 @@ class NITJSRServer {
       const rc = this.responseCache.getStats();
       console.log(`[ResponseCache] initialized backend=${rc.backend} ttlSeconds=${rc.ttlSeconds} bits=${rc.lshBits} radius=${rc.hammingRadius} threshold=${rc.threshold} modelKey=${rc.modelKey}`);
     } catch (_) {}
+    try {
+      this.chatHistory = new ChatHistory();
+      console.log(`[ChatHistory] initialized backend=${this.chatHistory.backend} limit=${this.chatHistory.perSessionLimit} namespace=${this.chatHistory.namespace}`);
+    } catch (error) {
+      this.chatHistory = null;
+      console.warn('[ChatHistory] initialization failed:', error?.message || error);
+    }
     this.scraper = new NITJSRScraper({
       maxPages: 4,
       maxDepth: 3,
@@ -283,94 +291,39 @@ class NITJSRServer {
       }
     });
 
-    // Chat endpoint - main RAG functionality
-    this.app.post('/chat', async (req, res) => {
-      try {
-        const { question } = req.body;
-
-        if (!question || question.trim().length === 0) {
-          return res
-            .status(400)
-            .json({ success: false, error: 'Question is required and cannot be empty' });
-        }
-
-        if (!this.isInitialized) {
-          return res.status(503).json({
-            success: false,
-            error: 'System not initialized. Please call /initialize first.',
-          });
-        }
-
-        console.log(`Processing question with Gemini: "${question}"`);
-        // Try semantic response cache first (uses ragSystem embedding cache and embeddings)
-        try {
-          if (this.responseCache && this.ragSystem?.embeddingCache && this.ragSystem?.embeddings) {
-            const vector = await this.ragSystem.embeddingCache.getQueryEmbedding(
-              question,
-              async (q) => await this.ragSystem.embeddings.embedQuery(q)
-            );
-            const result = await this.responseCache.getSimilar(vector);
-            if (result?.hit && result.item?.responseText) {
-              console.log(`[ResponseCache] HIT sim=${result.similarity?.toFixed?.(4)} — returning cached answer`);
-              const meta = result.item.metadata || {};
-              return res.json({
-                success: true,
-                question,
-                timestamp: new Date().toISOString(),
-                aiProvider: 'Google Gemini',
-                answer: result.item.responseText,
-                sources: meta.sources || [],
-                relevantLinks: meta.relevantLinks || [],
-                confidence: typeof meta.confidence === 'number' ? meta.confidence : 0,
-              });
-            }
-            // On MISS, continue to generate and then store
-            var _cacheVector = vector;
-          }
-        } catch (e) {
-          console.warn('[ResponseCache] lookup failed:', e?.message || e);
-        }
-
-        const response = await this.ragSystem.chat(question, _cacheVector || null);
-
-        // Store in response cache for future reuse
-        try {
-          if (this.responseCache && _cacheVector && response?.answer) {
-            await this.responseCache.put(_cacheVector, {
-              responseText: response.answer,
-              question,
-              metadata: {
-                sources: response.sources || [],
-                relevantLinks: response.relevantLinks || [],
-                confidence: typeof response.confidence === 'number' ? response.confidence : 0,
-              },
-            });
-          }
-        } catch (e) {
-          console.warn('[ResponseCache] put failed:', e?.message || e);
-        }
-
-        res.json({
-          success: true,
-          question: question,
-          timestamp: new Date().toISOString(),
-          aiProvider: 'Google Gemini',
-          ...response,
-        });
-      } catch (error) {
-        console.error('Chat error:', error);
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
     this.app.post('/chat-stream', async (req, res) => {
-      const { question } = req.body || {};
+      const { question, sessionId: clientSessionId } = req.body || {};
 
       if (!question || question.trim().length === 0) {
         return res
           .status(400)
           .json({ success: false, error: 'Question is required and cannot be empty' });
       }
+
+      const headerSessionId = typeof req.headers['x-session-id'] === 'string' ? req.headers['x-session-id'] : undefined;
+      const sessionId =
+        clientSessionId ||
+        headerSessionId ||
+        `anon-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+      const history = this.chatHistory ? await this.chatHistory.getHistory(sessionId) : [];
+      const recordHistory = async (assistantText) => {
+        if (!this.chatHistory) return;
+        try {
+          await this.chatHistory.appendMessage(sessionId, {
+            role: 'user',
+            content: question,
+            at: new Date().toISOString(),
+          });
+          await this.chatHistory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: assistantText || '',
+            at: new Date().toISOString(),
+          });
+        } catch (historyError) {
+          console.warn('[ChatHistory] append failed:', historyError?.message || historyError);
+        }
+      };
 
       if (!this.isInitialized) {
         return res.status(503).json({
@@ -412,6 +365,7 @@ class NITJSRServer {
               relevantLinks: meta.relevantLinks || [],
               confidence: typeof meta.confidence === 'number' ? meta.confidence : 0,
             });
+            await recordHistory(result.item.responseText || '');
             return res.end();
           }
         }
@@ -427,7 +381,8 @@ class NITJSRServer {
             if (chunkText) {
               send('chunk', { text: chunkText });
             }
-          }
+          },
+          history
         );
 
         try {
@@ -455,6 +410,7 @@ class NITJSRServer {
           confidence:
             typeof finalResponse?.confidence === 'number' ? finalResponse.confidence : 0,
         });
+        await recordHistory(finalResponse?.answer || '');
         res.end();
       } catch (error) {
         console.error('chat-stream error:', error);
