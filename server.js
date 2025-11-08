@@ -6,6 +6,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { MongoClient } from 'mongodb';
+import { createClient as createRedisClient } from 'redis';
+import { createRateLimiter } from './rate-limiting/rateLimiter.js';
+
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,9 +66,32 @@ class NITJSRServer {
       delay: 1500,
     });
     this.isInitialized = false;
+
+    // NEW: place to store redis client
+    this.redis = null;
+    this._chatRateLimiter = null;
     this.setupMiddleware();
     this.setupRoutes();
   }
+
+    async connectRedis() {
+    if (this.redis) return this.redis;
+    const url = process.env.REDIS_URL;
+    if (!url) {
+      console.warn('[redis] REDIS_URL not set; rate limiting will use memory fallback.');
+      return null;
+    }
+
+    const client = createRedisClient({ url });
+    client.on('error', (err) => {
+      console.warn('[redis] client error:', err?.message || err);
+    });
+    await client.connect();
+    console.log('[redis] connected for rate limiting');
+    this.redis = client;
+    return this.redis;
+  }
+
 
   async connectMongo() {
     if (this.mongo.status === 'connecting') {
@@ -285,7 +312,22 @@ class NITJSRServer {
       }
     });
 
-    this.app.post('/chat-stream', async (req, res) => {
+
+    this.app.post('/chat-stream',
+      async (req, res, next) => {
+        // lazy create limiter
+        if (!this._chatRateLimiter) {
+          const redis = await this.connectRedis().catch(() => null);
+          this._chatRateLimiter = createRateLimiter({
+            redis,
+            windowSeconds: 60,
+            maxRequests: 2,//TODO:if you are reading this then please increase this (2 requests per minute is for testing)
+            prefix: 'rl:chat:v1:',
+          });
+        }
+        return this._chatRateLimiter(req, res, next);
+      },
+      async (req, res) => {
       const { question, sessionId: clientSessionId } = req.body || {};
 
       if (!question || question.trim().length === 0) {
