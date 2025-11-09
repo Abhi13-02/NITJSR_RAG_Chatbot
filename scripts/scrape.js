@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { NITJSRScraper } from '../scraper/scraper.js';
 
 function parseArgs(argv) {
-  const args = { maxPages: 1, maxDepth: 4, delay: 1500 };
+  const args = { maxPages: 20, maxDepth: 4, delay: 1500 };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--maxPages' && argv[i + 1]) args.maxPages = Number(argv[++i]);

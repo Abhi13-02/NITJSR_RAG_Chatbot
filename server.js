@@ -61,7 +61,7 @@ class NITJSRServer {
       console.warn('[ChatHistory] initialization failed:', error?.message || error);
     }
     this.scraper = new NITJSRScraper({
-      maxPages: 4,
+      maxPages: 20,
       maxDepth: 3,
       delay: 1500,
     });
