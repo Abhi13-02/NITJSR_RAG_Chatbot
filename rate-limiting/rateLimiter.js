@@ -1,83 +1,63 @@
 /**
- * Use Redis if provided, otherwise falls back to in-memory (for dev).
- *
- * key order:
- * 1. x-session-id header
- * 2. req.body.sessionId
- * 3. req.ip
+ * Global-only rate limiter.
+ * Uses Redis (or Upstash) if provided, else falls back to in-memory (dev only).
  */
 export function createRateLimiter({
   redis = null,
   windowSeconds = 60,
-  maxRequests = 30,
+  maxRequests = 30, // global limit per window
+  maxGlobal = null, // optional override for clarity
   prefix = 'rl:chat:v1:',
 } = {}) {
   // in-memory fallback (dev only)
   const memory = new Map();
 
+  const limit = Number.isFinite(maxGlobal) ? Number(maxGlobal) : Number(maxRequests);
+  const key = `${prefix}GLOBAL`;
+
   return async function rateLimiter(req, res, next) {
-    // derive key from session or IP
-    const sessionHeader = typeof req.headers['x-session-id'] === 'string'
-      ? req.headers['x-session-id']
-      : null;
-    const sessionBody = req.body && typeof req.body.sessionId === 'string'
-      ? req.body.sessionId
-      : null;
-    const identity = sessionHeader || sessionBody || req.ip || 'anon';
-
-    const key = `${prefix}${identity}`;
-
-    // If we have redis → use atomic INCR + EXPIRE
+    // Redis/Upstash path
     if (redis) {
       try {
-        // INCR
         const count = await redis.incr(key);
         if (count === 1) {
-          // first hit in window → set TTL
           await redis.expire(key, windowSeconds);
         }
-
-        if (count > maxRequests) {
+        if (count > limit) {
           const ttl = await redis.ttl(key);
           return res.status(429).json({
             success: false,
             error: 'Rate limit exceeded. Please try again later.',
             retryAfterSeconds: ttl > 0 ? ttl : windowSeconds,
+            limitType: 'global',
           });
         }
-
         return next();
       } catch (err) {
-        console.warn('[rateLimiter] redis failed, falling back to next()', err?.message || err);
-        return next();
+        console.warn('[rateLimiter] redis failed, falling back to in-memory', err?.message || err);
+        // fall through
       }
     }
 
-    // fallback: in-memory (not for prod)
+    // In-memory fallback
     const now = Date.now();
-    const bucket = memory.get(key);
-
-    if (!bucket) {
-      memory.set(key, { count: 1, resetAt: now + windowSeconds * 1000 });
+    let bucket = memory.get(key);
+    if (!bucket || now > bucket.resetAt) {
+      bucket = { count: 1, resetAt: now + windowSeconds * 1000 };
+      memory.set(key, bucket);
       return next();
     }
-
-    if (now > bucket.resetAt) {
-      // window expired
-      memory.set(key, { count: 1, resetAt: now + windowSeconds * 1000 });
-      return next();
-    }
-
-    if (bucket.count >= maxRequests) {
+    if (bucket.count >= limit) {
       const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
       return res.status(429).json({
         success: false,
-        error: 'Rate limit exceeded. Please try again later.',
+        error: 'Rate limit exceeded. Pleasee try again later.',
         retryAfterSeconds: retryAfter,
+        limitType: 'global',
       });
     }
-
     bucket.count += 1;
     return next();
   };
 }
+
