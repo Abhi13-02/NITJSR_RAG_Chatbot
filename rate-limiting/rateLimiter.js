@@ -1,83 +1,132 @@
 /**
- * Use Redis if provided, otherwise falls back to in-memory (for dev).
+ * Rate limiter middleware.
  *
- * key order:
- * 1. x-session-id header
- * 2. req.body.sessionId
- * 3. req.ip
+ * Behavior:
+ * - Enforces a GLOBAL limit first (all requests combined).
+ * - Then enforces a per-SESSION limit only if a sessionId is present
+ *   (via `x-session-id` header or `req.body.sessionId`).
+ * - No IP-based limiting or fallback.
+ *
+ * Back-compat options:
+ * - `maxRequests` (legacy) applies to BOTH global and per-session if
+ *    explicit `maxGlobal` / `maxPerSession` are not provided.
  */
 export function createRateLimiter({
   redis = null,
   windowSeconds = 60,
-  maxRequests = 30,
+  maxRequests = 30, // legacy default
+  maxGlobal = 10,
+  maxPerSession = 2,
   prefix = 'rl:chat:v1:',
 } = {}) {
   // in-memory fallback (dev only)
   const memory = new Map();
 
+  // normalize limits
+  const globalLimit = Number.isFinite(maxGlobal)
+    ? Number(maxGlobal)
+    : Number(maxRequests);
+  const sessionLimit = Number.isFinite(maxPerSession)
+    ? Number(maxPerSession)
+    : Number(maxRequests);
+
+  function incrMemory(key, now, winMs) {
+    const bucket = memory.get(key);
+    if (!bucket || now > bucket.resetAt) {
+      const fresh = { count: 1, resetAt: now + winMs };
+      memory.set(key, fresh);
+      return fresh;
+    }
+    bucket.count += 1;
+    return bucket;
+  }
+
   return async function rateLimiter(req, res, next) {
-    // derive key from session or IP
+    // derive session id only; do NOT use IP fallback
     const sessionHeader = typeof req.headers['x-session-id'] === 'string'
       ? req.headers['x-session-id']
       : null;
     const sessionBody = req.body && typeof req.body.sessionId === 'string'
       ? req.body.sessionId
       : null;
-    const identity = sessionHeader || sessionBody || req.ip || 'anon';
+    const sessionId = sessionHeader || sessionBody || null;
 
-    const key = `${prefix}${identity}`;
+    const globalKey = `${prefix}GLOBAL`;
+    const sessionKey = sessionId ? `${prefix}s:${sessionId}` : null;
 
-    // If we have redis → use atomic INCR + EXPIRE
+    // Prefer Redis for atomic counters
     if (redis) {
       try {
-        // INCR
-        const count = await redis.incr(key);
-        if (count === 1) {
-          // first hit in window → set TTL
-          await redis.expire(key, windowSeconds);
+        // GLOBAL first
+        const globalCount = await redis.incr(globalKey);
+        if (globalCount === 1) {
+          await redis.expire(globalKey, windowSeconds);
         }
-
-        if (count > maxRequests) {
-          const ttl = await redis.ttl(key);
+        if (globalCount > globalLimit) {
+          const ttl = await redis.ttl(globalKey);
           return res.status(429).json({
             success: false,
             error: 'Rate limit exceeded. Please try again later.',
             retryAfterSeconds: ttl > 0 ? ttl : windowSeconds,
+            limitType: 'global',
           });
+        }
+
+        // If session is present, enforce per-session
+        if (sessionKey) {
+          const sessCount = await redis.incr(sessionKey);
+          if (sessCount === 1) {
+            await redis.expire(sessionKey, windowSeconds);
+          }
+          if (sessCount > sessionLimit) {
+            const ttl = await redis.ttl(sessionKey);
+            return res.status(429).json({
+              success: false,
+              error: 'Rate limit exceeded. Please try again later.',
+              retryAfterSeconds: ttl > 0 ? ttl : windowSeconds,
+              limitType: 'session',
+            });
+          }
         }
 
         return next();
       } catch (err) {
-        console.warn('[rateLimiter] redis failed, falling back to next()', err?.message || err);
-        return next();
+        console.warn('[rateLimiter] redis failed, falling back to in-memory', err?.message || err);
+        // fall through to memory path
       }
     }
 
     // fallback: in-memory (not for prod)
     const now = Date.now();
-    const bucket = memory.get(key);
+    const winMs = windowSeconds * 1000;
 
-    if (!bucket) {
-      memory.set(key, { count: 1, resetAt: now + windowSeconds * 1000 });
-      return next();
-    }
-
-    if (now > bucket.resetAt) {
-      // window expired
-      memory.set(key, { count: 1, resetAt: now + windowSeconds * 1000 });
-      return next();
-    }
-
-    if (bucket.count >= maxRequests) {
-      const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+    // GLOBAL first
+    const g = incrMemory(globalKey, now, winMs);
+    if (g.count > globalLimit) {
+      const retryAfter = Math.ceil((g.resetAt - now) / 1000);
       return res.status(429).json({
         success: false,
         error: 'Rate limit exceeded. Please try again later.',
         retryAfterSeconds: retryAfter,
+        limitType: 'global',
       });
     }
 
-    bucket.count += 1;
+    // Per-session only if we have a sessionId
+    if (sessionKey) {
+      const s = incrMemory(sessionKey, now, winMs);
+      if (s.count > sessionLimit) {
+        const retryAfter = Math.ceil((s.resetAt - now) / 1000);
+        return res.status(429).json({
+          success: false,
+          error: 'Rate limit exceeded. Please try again later.',
+          retryAfterSeconds: retryAfter,
+          limitType: 'session',
+        });
+      }
+    }
+
     return next();
   };
 }
+

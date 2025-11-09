@@ -315,13 +315,15 @@ class NITJSRServer {
 
     this.app.post('/chat-stream',
       async (req, res, next) => {
-        // lazy create limiter
+        // lazy create limiter middleware
         if (!this._chatRateLimiter) {
           const redis = await this.connectRedis().catch(() => null);
           this._chatRateLimiter = createRateLimiter({
             redis,
             windowSeconds: 60,
-            maxRequests: 2,//TODO:if you are reading this then please increase this (2 requests per minute is for testing)
+            //maxRequests: 2,
+            maxGlobal:10,
+            maxPerSession: 2,
             prefix: 'rl:chat:v1:',
           });
         }
