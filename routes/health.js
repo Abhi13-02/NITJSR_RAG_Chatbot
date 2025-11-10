@@ -1,3 +1,5 @@
+import { authenticateAdmin } from "../config/auth.js";
+
 export function setupHealthRoutes(app, server) {
 
     // Health check endpoint
@@ -30,7 +32,7 @@ export function setupHealthRoutes(app, server) {
 
 
     // Test Gemini connection
-    app.get('/test-gemini', async (req, res) => {
+    app.get('/test-gemini', authenticateAdmin, async (req, res) => {
         try {
             const { GoogleGenerativeAI } = await import('@google/generative-ai');
             const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -61,7 +63,7 @@ export function setupHealthRoutes(app, server) {
 
 
     // Test Pinecone connection
-    app.get('/test-pinecone', async (req, res) => {
+    app.get('/test-pinecone', authenticateAdmin, async (req, res) => {
         try {
             const { Pinecone } = await import('@pinecone-database/pinecone');
             const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY.trim() });

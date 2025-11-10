@@ -5,6 +5,7 @@ import { setupScrapeRoutes } from './scrape.js';
 import { setupDataRoutes } from './data.js';
 import { setupStaticRoutes } from './static.js';
 
+
 export function setupRoutes(app, server) {
     setupHealthRoutes(app, server);
     setupSystemRoutes(app, server);

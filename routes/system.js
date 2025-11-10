@@ -1,3 +1,5 @@
+import { authenticateAdmin } from "../config/auth.js";
+
 export function setupSystemRoutes(app, server) {
 
     // Initialize system endpoint
@@ -26,7 +28,7 @@ export function setupSystemRoutes(app, server) {
 
 
     // Embed latest scraped dataset into Pinecone + Mongo ledger
-    app.post('/embed-latest', async (req, res) => {
+    app.post('/embed-latest', authenticateAdmin, async (req, res) => {
         try {
             const mongoReady = await server.dbManager.ensureMongoConnected();
             if (!mongoReady) {
@@ -69,7 +71,7 @@ export function setupSystemRoutes(app, server) {
 
 
     // Admin: reset vector store (Pinecone) + Mongo collections
-    app.post('/reset-storage', async (req, res) => {
+    app.post('/reset-storage', authenticateAdmin, async (req, res) => {
         try {
             // make sure RAG system is ready so clearIndex() has an index
             await server.ragSystem.initialize();
@@ -112,7 +114,7 @@ export function setupSystemRoutes(app, server) {
 
 
     // Preview diff without embedding
-    app.get('/reindex/preview', async (req, res) => {
+    app.get('/reindex/preview', authenticateAdmin, async (req, res) => {
         try {
             const mongoReady = await server.dbManager.ensureMongoConnected();
             if (!mongoReady) {

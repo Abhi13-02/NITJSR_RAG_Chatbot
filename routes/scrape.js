@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-
+import { authenticateAdmin } from "../config/auth.js";
 
 const summarizePageCategories = (pages = []) => {
     const counts = pages.reduce((acc, page) => {
@@ -15,7 +15,7 @@ const summarizePageCategories = (pages = []) => {
 export function setupScrapeRoutes(app, server) {
 
     // Scrape fresh data endpoint
-    app.post('/scrape', async (req, res) => {
+    app.post('/scrape', authenticateAdmin, async (req, res) => {
         try {
             const payload = req.body || {};
             const { force = false } = payload;
@@ -56,7 +56,7 @@ export function setupScrapeRoutes(app, server) {
 
 
     // Combined scrape and embed endpoint
-    app.post('/scrape-and-embed', async (req, res) => {
+    app.post('/scrape-and-embed', authenticateAdmin, async (req, res) => {
         try {
             const payload = req.body || {};
             const { force = false } = payload;

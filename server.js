@@ -3,6 +3,7 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
+import { setupAuthRoutes } from './routes/auth.js';
 import { NITJSRScraper } from './scraper/scraper.js';
 import { NITJSRRAGSystem } from './rag-system/RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
@@ -64,6 +65,7 @@ class NITJSRServer {
 
         // Setup middleware and routes
         setupMiddleware(this.app, this.__dirname);
+        setupAuthRoutes(this.app);
         setupRoutes(this.app, this);
         setupErrorHandler(this.app);
     }

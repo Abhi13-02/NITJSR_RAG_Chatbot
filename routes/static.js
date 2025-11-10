@@ -1,14 +1,20 @@
 import path from 'path';
+import { authenticateAdmin } from "../config/auth.js";
 
 export function setupStaticRoutes(app, server) {
 
-    // Admin endpoint
-    app.get('/admin', (req, res) => {
+    // admin login page
+    app.get('/admin/login', (req, res) => {
+        res.sendFile(path.join(server.__dirname, 'public', 'login.html'));
+    });
+
+    // admin panel or dashboard whatever...
+    app.get('/admin/dashboard', authenticateAdmin, (req, res) => {
         res.sendFile(path.join(server.__dirname, 'public', 'admin.html'));
     });
 
 
-    // Root endpoint
+    // root endpoint
     app.get('/', (req, res) => {
         res.sendFile(path.join(server.__dirname, 'public', 'index.html'));
     });

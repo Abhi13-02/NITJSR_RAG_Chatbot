@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import cookieParser from 'cookie-parser';
 
 export function setupMiddleware(app, __dirname) {
     // CORS configuration
@@ -21,6 +22,7 @@ export function setupMiddleware(app, __dirname) {
 
     app.use(express.json({ limit: '10mb' }));
     app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+    app.use(cookieParser());
 
     // Serve static files
     app.use(express.static(path.join(__dirname, 'public')));

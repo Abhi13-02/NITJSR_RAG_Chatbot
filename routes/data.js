@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { authenticateAdmin } from "../config/auth.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,7 +21,7 @@ const summarizePageCategories = (pages = []) => {
 export function setupDataRoutes(app, server) {
 
     // Get system statistics
-    app.get('/stats', async (req, res) => {
+    app.get('/stats', authenticateAdmin, async (req, res) => {
         try {
             const indexStats = await server.ragSystem.getIndexStats();
             const mongoSummary = {
