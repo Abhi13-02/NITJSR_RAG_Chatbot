@@ -54,7 +54,7 @@ class NITJSRServer {
 
         // Initialize scraper
         this.scraper = new NITJSRScraper({
-            maxPages: 20,
+            maxPages: 650,
             maxDepth: 3,
             delay: 1500,
         });
@@ -80,6 +80,7 @@ class NITJSRServer {
     validateEnvironment() {
         return validateEnvironment();
     }
+
 
     async initializeSystem() {
         if (this.isInitialized) {
@@ -148,6 +149,7 @@ class NITJSRServer {
         }
     }
 
+
     async shutdown() {
         console.log('Shutting down server...');
         await this.dbManager.closeMongo();
@@ -162,7 +164,9 @@ class NITJSRServer {
             process.exit(0);
         }
     }
+
 }
+
 
 // Start server if this file is run directly
 const server = new NITJSRServer();
