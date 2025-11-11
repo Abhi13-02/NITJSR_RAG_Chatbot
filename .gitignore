@@ -3,4 +3,17 @@ node_modules
 /scraped_data
 /test
 
+# ide
+.vscode/
 .idea/
+*.swp
+*.swo
+
+todo
+
+# backup files
+*.backup
+
+# temporary files
+tmp*
+generate-hash.*
