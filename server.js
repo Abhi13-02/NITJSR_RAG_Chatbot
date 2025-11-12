@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
 import { setupAuthRoutes } from './routes/auth.js';
-import { NITJSRScraper } from './scraper/scraper.js';
 import { NITJSRRAGSystem } from './rag-system/RagSystem.js';
 import { ResponseCache } from './caching/responseCache.js';
 import { ChatHistory } from './caching/chatHistory.js';
@@ -53,12 +52,9 @@ class NITJSRServer {
             console.warn('[ChatHistory] initialization failed:', error?.message || error);
         }
 
-        // Initialize scraper
-        this.scraper = new NITJSRScraper({
-            maxPages: 650,
-            maxDepth: 3,
-            delay: 1500,
-        });
+        // Scraper is optional and only loaded when enabled
+        this.scraper = null;
+        this.scraperEnabled = (process.env.ENABLE_SCRAPER || '').toLowerCase() === 'true';
 
         this.isInitialized = false;
         this._chatRateLimiter = null;
@@ -81,6 +77,25 @@ class NITJSRServer {
 
     validateEnvironment() {
         return validateEnvironment();
+    }
+
+    async ensureScraper() {
+        if (!this.scraperEnabled) {
+            throw new Error('Scraper is disabled');
+        }
+        if (this.scraper) {
+            return this.scraper;
+        }
+        const { NITJSRScraper } = await import('./scraper/scraper.js');
+        const defaultDelay = Number(process.env.SCRAPE_DELAY) || 1500;
+        const defaultMaxPages = Number(process.env.SCRAPE_MAX_PAGES) || 650;
+        const defaultMaxDepth = Number(process.env.SCRAPE_MAX_DEPTH) || 3;
+        this.scraper = new NITJSRScraper({
+            maxPages: defaultMaxPages,
+            maxDepth: defaultMaxDepth,
+            delay: defaultDelay,
+        });
+        return this.scraper;
     }
 
 
@@ -114,16 +129,8 @@ class NITJSRServer {
         try {
             await this.dbManager.connectMongo();
             this.server = this.app.listen(port, async () => {
-                console.log(`NIT Jamshedpur Gemini RAG Server running on port ${port}`);
-                console.log(`AI Provider: Google Gemini`);
-                console.log(`Health check: http://localhost:${port}/health`);
-                console.log(`Frontend: http://localhost:${port}`);
-                console.log(`Statistics: http://localhost:${port}/stats`);
-                console.log(`Links: http://localhost:${port}/links`);
-                console.log(`Test Gemini: http://localhost:${port}/test-gemini`);
-                console.log(`Test Pinecone: http://localhost:${port}/test-pinecone`);
-                console.log(`check changes: http://localhost:${port}/reindex/preview`);
-                console.log(`embed latest data: POST http://localhost:${port}/embed-latest`);
+                console.log(`Server listening on port ${port}`);
+                console.log('AI Provider: Google Gemini');
 
                 // Auto-initialize on startup (configurable)
                 const shouldAutoInit = (process.env.AUTO_INIT || 'true').toLowerCase() !== 'false';

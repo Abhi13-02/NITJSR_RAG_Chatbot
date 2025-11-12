@@ -17,6 +17,9 @@ export function setupScrapeRoutes(app, server) {
     // Scrape fresh data endpoint
     app.post('/scrape', authenticateAdmin, async (req, res) => {
         try {
+            if (!server.scraperEnabled) {
+                return res.status(503).json({ success: false, error: 'Scraper is disabled' });
+            }
             const payload = req.body || {};
             const { force = false } = payload;
             const scrapeOptions = server.buildScrapeOptions(payload);
@@ -26,7 +29,8 @@ export function setupScrapeRoutes(app, server) {
             if (hasOverrides) {
                 console.log('[scrape] Runtime overrides:', scrapeOptions);
             }
-            const scrapeResult = await server.scraper.scrapeComprehensive(scrapeOptions);
+            const scraper = await server.ensureScraper();
+            const scrapeResult = await scraper.scrapeComprehensive(scrapeOptions);
 
             // Load and process the scraped data
             const scrapedData = JSON.parse(await fs.readFile(scrapeResult.filepath, 'utf8'));
@@ -58,6 +62,9 @@ export function setupScrapeRoutes(app, server) {
     // Combined scrape and embed endpoint
     app.post('/scrape-and-embed', authenticateAdmin, async (req, res) => {
         try {
+            if (!server.scraperEnabled) {
+                return res.status(503).json({ success: false, error: 'Scraper is disabled' });
+            }
             const payload = req.body || {};
             const { force = false } = payload;
             const scrapeOptions = server.buildScrapeOptions(payload);
@@ -68,7 +75,8 @@ export function setupScrapeRoutes(app, server) {
                 console.log('[scrape-and-embed] Runtime overrides:', scrapeOptions);
             }
 
-            const scrapeResult = await server.scraper.scrapeComprehensive(scrapeOptions);
+            const scraper = await server.ensureScraper();
+            const scrapeResult = await scraper.scrapeComprehensive(scrapeOptions);
             console.log(
                 '[scrape-and-embed] Scrape completed:',
                 scrapeResult?.summary || 'No summary available'
