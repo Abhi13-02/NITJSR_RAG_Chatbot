@@ -3,7 +3,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
-import { BrowserManager } from './browserManager.js';
 import { UrlHelpers } from './urlHelpers.js';
 import { PageCategorizer } from './categories.js';
 import { PdfPolicy } from './pdfs.js';
@@ -31,7 +30,7 @@ class NITJSRScraper {
         this.excludeUrls = new Set();
 
         // Initialize helper classes
-        this.browserManager = new BrowserManager();
+        this.browserManager = null;
         this.urlHelpers = new UrlHelpers(this.baseUrl);
         this.categorizer = new PageCategorizer(this.baseUrl);
         this.pdfPolicy = new PdfPolicy();
@@ -95,6 +94,11 @@ class NITJSRScraper {
     }
 
     async initialize() {
+        if (!this.browserManager) {
+            const { BrowserManager } = await import('./browserManager.js');
+            this.browserManager = new BrowserManager();
+        }
+
         await this.browserManager.initialize();
     }
 
@@ -569,7 +573,9 @@ class NITJSRScraper {
 
 
     async cleanup() {
-        await this.browserManager.cleanup();
+        if (this.browserManager) {
+            await this.browserManager.cleanup();
+        }
     }
 
 }
