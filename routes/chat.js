@@ -1,6 +1,21 @@
 import { createRateLimiter } from '../rate-limiting/rateLimiter.js';
 
 
+/**
+ * Extracts and validates chat response fields from the final response object.
+ * Ensures consistency between chat route and responseCache logic.
+ */
+function extractChatResponseFields(finalResponse) {
+    const answerText = typeof finalResponse?.answer === 'string' ? finalResponse.answer.trim() : '';
+    const sources = Array.isArray(finalResponse?.sources) ? finalResponse.sources : [];
+    const relevantLinks = Array.isArray(finalResponse?.relevantLinks) ? finalResponse.relevantLinks : [];
+    const confidence =
+        typeof finalResponse?.confidence === 'number' && Number.isFinite(finalResponse.confidence)
+            ? finalResponse.confidence
+            : null;
+    return { answerText, sources, relevantLinks, confidence };
+}
+
 export function setupChatRoutes(app, server) {
     app.post('/chat-stream',
 
@@ -89,20 +104,24 @@ export function setupChatRoutes(app, server) {
                     _cacheVector = vector;
                     const result = await server.responseCache.getSimilar(vector);
                     if (result?.hit && result.item?.responseText) {
-                        console.log(
-                            `[ResponseCache] HIT sim=${result.similarity?.toFixed?.(4)} → streaming cached answer`
-                        );
-                        const meta = result.item.metadata || {};
-                        send('chunk', { text: result.item.responseText });
-                        send('end', {
-                            success: true,
-                            question,
-                            sources: meta.sources || [],
-                            relevantLinks: meta.relevantLinks || [],
-                            confidence: typeof meta.confidence === 'number' ? meta.confidence : 0,
-                        });
-                        await recordHistory(result.item.responseText || '');
-                        return res.end();
+                        if (typeof server.responseCache.isUsableHit === 'function' && server.responseCache.isUsableHit(result)) {
+                            const meta = result.item.metadata || {};
+                            console.log(
+                                `[ResponseCache] HIT sim=${result.similarity?.toFixed?.(4)} → streaming cached answer`
+                            );
+                            send('chunk', { text: result.item.responseText });
+                            send('end', {
+                                success: true,
+                                question,
+                                sources: meta.sources || [],
+                                relevantLinks: Array.isArray(meta.relevantLinks) ? meta.relevantLinks : [],
+                                confidence: meta.confidence,
+                            });
+                            await recordHistory(result.item.responseText || '');
+                            return res.end();
+                        }
+
+                        console.log('[ResponseCache] HIT skipped → metadata rejected, falling back to live generation');
                     }
                 }
             } catch (error) {
@@ -121,16 +140,25 @@ export function setupChatRoutes(app, server) {
                     history
                 );
 
+                const { answerText, sources, relevantLinks, confidence } = extractChatResponseFields(finalResponse);
+
                 try {
-                    if (server.responseCache && _cacheVector && finalResponse?.answer) {
+                    if (
+                        server.responseCache &&
+                        _cacheVector &&
+                        answerText &&
+                        sources.length > 0 &&
+                        confidence !== null &&
+                        confidence > 0
+                    ) {
                         await server.responseCache.put(_cacheVector, {
-                            responseText: finalResponse.answer,
+                            responseText: answerText,
                             question,
                             metadata: {
-                                sources: finalResponse.sources || [],
-                                relevantLinks: finalResponse.relevantLinks || [],
-                                confidence:
-                                    typeof finalResponse.confidence === 'number' ? finalResponse.confidence : 0,
+                                sources,
+                                relevantLinks,
+                                confidence,
+                                success: true,
                             },
                         });
                     }
@@ -141,12 +169,11 @@ export function setupChatRoutes(app, server) {
                 send('end', {
                     success: true,
                     question,
-                    sources: finalResponse?.sources || [],
-                    relevantLinks: finalResponse?.relevantLinks || [],
-                    confidence:
-                        typeof finalResponse?.confidence === 'number' ? finalResponse.confidence : 0,
+                    sources,
+                    relevantLinks,
+                    confidence: confidence ?? 0,
                 });
-                await recordHistory(finalResponse?.answer || '');
+                await recordHistory(answerText || '');
                 res.end();
 
             } catch (error) {
