@@ -1,4 +1,226 @@
 # NIT Jamshedpur RAG Chatbot
+# NIT Jamshedpur RAG Chatbot
+
+AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augmented Generation (RAG). It crawls the official website, extracts and embeds content, and serves accurate, source‑grounded answers with relevant links and streaming responses.
+
+— Built for reliability, speed, and maintainability. Perfect for demos, interviews, and real users.
+
+
+**Why it stands out**
+- End‑to‑end RAG: scraper → embedding → vector search → streaming answers
+- Uses Google Gemini for generation and Cohere for embeddings
+- Vector search on Pinecone; MongoDB ledger for change tracking and safe re‑ingestion
+- Production‑minded: rate limiting, Redis caches, and SSE streaming
+- Smart scraper with Puppeteer + sitemap policy to prioritize fresh tenders/notices and PDFs
+
+
+**Live Experience (local)**
+- Chat UI: `http://localhost:3000/`
+- Admin/Docs page: `http://localhost:3000/admin`
+- Health: `http://localhost:3000/health`
+- Stats: `http://localhost:3000/stats`
+
+
+## Overview
+
+The system implements a pragmatic RAG architecture tailored for the NIT Jamshedpur website:
+
+- Scrape the site with Puppeteer, collect rich page content and PDF links, and persist snapshots under `scraped_data/`.
+- Chunk and embed with Cohere; store semantic vectors in Pinecone.
+- Maintain a change ledger in MongoDB (per URL content hash) to avoid duplicate work and to safely delete stale vectors.
+- Serve chat with Google Gemini; retrieve top‑K relevant chunks and stream answers via Server‑Sent Events (SSE).
+- Cache heavy work: embedding cache and a semantic response cache using LSH (Redis‑backed or in‑memory fallback).
+- Enforce rate limits per session/IP using Redis or memory fallback.
+
+
+## Architecture
+
+- Scraper: Puppeteer + Axios with sitemap awareness, categorized page discovery, dynamic JSON/XHR parsing and PDF link extraction.
+- Embeddings: Cohere v3 (`1024`‑dim) via LangChain.
+- Vector Store: Pinecone (cosine similarity, dimension 1024).
+- Generation: Google Gemini (`gemini‑2.5‑flash`) with structured prompt and context window from vector search.
+- Change Ledger: MongoDB collections `pages` and `chunks` track content hashes, chunk IDs, and versions.
+- Caches:
+  - Embedding cache (`caching/embeddingCache.js`) — Redis or in‑memory LRU
+  - Response cache (`caching/responseCache.js`) — LSH over embeddings to reuse similar answers
+- API & Streaming: Express with SSE on `/chat-stream`, plus admin endpoints for scraping/embedding/health.
+- Rate Limiting: Redis‑based limiter with memory fallback.
+
+
+## Tech Stack
+
+- Node.js (ESM), Express, CORS
+- Google Generative AI (Gemini)
+- Cohere Embeddings via LangChain
+- Pinecone Vector Database
+- MongoDB (change ledger)
+- Redis (optional) for caching and rate limiting
+- Puppeteer (scraper), Axios, Cheerio‑style parsing (via DOM evaluation)
+- Frontend: simple HTML/CSS/JS served from `public/` with a clean chat UI
+
+
+## Repository Layout
+
+- `server.js` — Express server, routes, startup and lifecycle
+- `rag-system/RagSystem.js` — RAG core (init, retrieval, streaming chat, ledger ingestion)
+- `scraper/scraper.js` — Puppeteer scraper with sitemap and PDF policy
+- `scraper/processPdfs.js` — PDF processing helpers
+- `caching/` — embedding and response caches, normalization, and chat history
+- `rate-limiting/rateLimiter.js` — per‑session/IP limiter (Redis/memory)
+- `scripts/` — CLI flows for `scrape`, `embed`, `serve`
+- `public/` — chat UI and admin reference page
+- `scraped_data/` — persisted scrape snapshots (JSON)
+
+
+## Getting Started
+
+Prerequisites
+- Node.js 18+
+- Pinecone account (index with dimension 1024, cosine)
+- Cohere API key
+- Google Gemini API key
+- MongoDB (recommended) for change ledger
+- Redis (optional) for durable caches
+
+Install
+- `npm install`
+
+Environment
+Create a `.env` file (do not commit secrets):
+
+```
+PORT=3000
+NODE_ENV=development
+
+# AI Providers
+GEMINI_API_KEY=...
+COHERE_API_KEY=...
+COHERE_EMBED_MODEL=embed-english-v3.0
+
+# Pinecone
+PINECONE_API_KEY=...
+PINECONE_ENVIRONMENT=us-east-1
+PINECONE_INDEX_NAME=nitjsrchatbot
+
+# MongoDB (recommended)
+MONGODB_URI=...
+MONGODB_DB=nitjsr_rag
+MONGO_PAGES_COLL=pages
+MONGO_CHUNKS_COLL=chunks
+
+# Redis (optional)
+REDIS_URL=redis://localhost:6379
+
+# Response cache tuning (optional)
+RESPONSE_CACHE_TTL_SECONDS=604800
+RESPONSE_CACHE_LSH_BITS=16
+RESPONSE_CACHE_LSH_RADIUS=1
+RESPONSE_CACHE_SIM_THRESHOLD=0.92
+RESPONSE_CACHE_MAX_CANDIDATES=200
+
+# Control auto‑initialization at boot
+AUTO_INIT=true
+```
+
+Run the core workflow
+1) Scrape content
+- `npm run scrape -- --maxPages 100 --maxDepth 3 --delay 1500`
+  - Output JSON is saved to `scraped_data/`.
+2) Embed into Pinecone (requires MongoDB for the ledger path)
+- `npm run embed -- --latest`
+- `npm run embed -- --latest --force` (clears Pinecone first)
+3) Serve the chatbot
+- `npm run dev` (nodemon) or `npm start`
+- `npm run serve` to start without auto‑initialization (set `AUTO_INIT=false`)
+
+
+## Key Endpoints
+
+- `POST /initialize` — Validate env and initialize the RAG system
+- `POST /chat-stream` — Streamed chat responses (SSE). Send `{ question, sessionId }`
+- `POST /scrape` — Scrape website; accepts overrides like `maxPages`, `maxDepth`
+- `POST /scrape-and-embed` — Scrape then embed into Pinecone
+- `POST /embed-latest` — Embed the most recent snapshot from `scraped_data/`
+- `POST /reset-storage` — Clear Pinecone and Mongo collections
+- `GET /health` — Status, caches, index stats, Mongo status
+- `GET /stats` — Summary including data files and cache stats
+- `GET /sources` — Overview of available scraped snapshots
+- `GET /links` — All discovered links (pdf, page, etc.) once initialized
+
+
+## Data Flow
+
+1) Discovery & Scrape
+- Sitemap‑aware crawler discovers section pages and recent tender/notice PDFs.
+- Page DOM is filtered for main content; tables and lists are captured.
+- JSON/XHR responses are inspected to capture PDFs linked indirectly.
+
+2) Ingestion & Embedding
+- Text is split into overlapping chunks (LangChain splitter).
+- Cohere embeddings (v3, 1024‑dim) are computed with a cache.
+- Pinecone upserts chunks; Mongo ledger tracks content hashes and versions.
+- Stale chunks are pruned safely using the ledger plan.
+
+3) Query & Generation
+- For each user question, top‑K chunks are retrieved from Pinecone.
+- A structured prompt is sent to Gemini; response is streamed via SSE.
+- Response cache can short‑circuit if a highly similar question was answered recently.
+
+
+## Performance & Reliability
+
+- Cohere embeddings cached to reduce model calls
+- Response cache uses LSH buckets in Redis or memory for fast approximate lookups
+- Mongo change ledger prevents duplicate embeddings and handles deletes
+- Rate limiter protects `/chat-stream` with Redis/memory backend
+- SSE streaming improves perceived latency for users
+
+
+## Security & Deployment Notes
+
+- Never commit `.env` with secrets. Rotate leaked keys immediately.
+- Put the service behind HTTPS and a reverse proxy (e.g., NGINX); enable authentication on admin endpoints if exposed.
+- Pin Pinecone index to 1024 dimensions for Cohere v3; recreate if misconfigured.
+- Production: prefer Redis for caches and enable Mongo ledger; consider VPC‑peered services where available.
+
+
+## What Recruiters Should Notice
+
+- System thinking: end‑to‑end design from data acquisition to answer delivery
+- Practical tradeoffs: fast iteration, robust defaults, and operational safeguards
+- Clear separation of concerns: scraper, RAG core, caching, rate limiting, and UI
+- Maintainability: change‑ledger approach, metrics endpoints, and CLI scripts
+- Production empathy: caching layers, rate limiting, and graceful startup/shutdown
+
+
+## Roadmap (Next Steps)
+
+- Add evaluation harness for answer quality (groundedness, factuality)
+- Add auth and role‑based access for admin endpoints
+- Support hybrid retrieval (keyword + vector)
+- Improve PDF parsing pipeline and document chunking heuristics
+- Add observability (tracing and structured metrics)
+
+
+## Quick Commands
+
+- Install: `npm install`
+- Scrape: `npm run scrape -- --maxPages 100 --maxDepth 3`
+- Embed: `npm run embed -- --latest` (use `--force` to clear index)
+- Serve: `npm run dev` or `npm start`
+- No auto‑init: `npm run serve` (sets `AUTO_INIT=false`)
+
+
+## Credits
+
+- Google Generative AI (Gemini) for generation
+- Cohere + LangChain for embeddings
+- Pinecone for vector search
+- Puppeteer for scraping
+- Redis and MongoDB for caching and ledgering
+
+
+— If you’d like a tour of the codebase or a live demo, just ask. 
 
 Retrieval-Augmented Generation (RAG) stack for answering questions about NIT Jamshedpur.  
 The system scrapes the official institute website, chunks and embeds the content with Cohere, stores the vectors in Pinecone, and generates answers with Google Gemini.  
