@@ -190,18 +190,65 @@ export class ResponseCache {
     return stableHash(`${b64}:${txt}`);
   }
 
+  isUsableHit(item) {
+    if (!item) return false;
+    const text = typeof item.responseText === 'string' ? item.responseText.trim() : '';
+    if (!text) return false;
+    const meta = item.metadata || {};
+    const sourcesValid = Array.isArray(meta.sources) && meta.sources.length > 0;
+    const confidenceValid =
+      typeof meta.confidence === 'number' && Number.isFinite(meta.confidence) && meta.confidence > 0;
+    if (!sourcesValid || !confidenceValid) return false;
+    if (meta.success === false) return false;
+    return true;
+  }
+
   async put(vectorInput, payload = {}) {
     const vector = toFloat32(vectorInput);
+    if (!Array.isArray(vector) || vector.length === 0) {
+      console.warn('[ResponseCache] skip put (empty vector)');
+      return null;
+    }
+
+    const responseText = typeof payload?.responseText === 'string' ? payload.responseText.trim() : '';
+    const metadataRaw = payload?.metadata ?? {};
+    const sources = Array.isArray(metadataRaw.sources) ? [...metadataRaw.sources] : [];
+    const relevantLinks = Array.isArray(metadataRaw.relevantLinks) ? [...metadataRaw.relevantLinks] : [];
+    const confidence =
+      typeof metadataRaw.confidence === 'number' && Number.isFinite(metadataRaw.confidence)
+        ? metadataRaw.confidence
+        : null;
+
+    const eligible = responseText.length > 0 && sources.length > 0 && confidence !== null && confidence > 0;
+
+    if (!eligible) {
+      const reasons = [];
+      if (!responseText.length) reasons.push('responseText');
+      if (sources.length === 0) reasons.push('sources');
+      if (confidence === null || confidence <= 0) reasons.push('confidence');
+      console.log(`[ResponseCache] skip put (payload not eligible: ${reasons.join(', ')})`);
+      return null;
+    }
+
     const dim = vector.length;
-    const id = this.makeId(vector, payload);
+    // Always use trimmed responseText for ID and storage
+    const trimmedPayload = { ...payload, responseText };
+    const id = this.makeId(vector, trimmedPayload);
+    const metadata = {
+      ...metadataRaw,
+      sources,
+      relevantLinks,
+      confidence,
+      success: true,
+    };
     const item = {
       id,
       modelKey: this.modelKey,
       dim,
       created_at: new Date().toISOString(),
       vector_b64: floatArrayToBase64(vector),
-      responseText: payload.responseText ?? null,
-      metadata: payload.metadata ?? null,
+      responseText,
+      metadata,
       question: payload.question ?? null,
       ttlSeconds: this.ttlSeconds,
     };
@@ -288,6 +335,10 @@ export class ResponseCache {
           }
           try {
             const obj = JSON.parse(raw);
+            if (!this.isUsableHit(obj)) {
+              toCleanup.push(ids[i]);
+              continue;
+            }
             const vec = base64ToFloatArray(obj.vector_b64);
             const sim = cosineSimilarity(vector, vec);
             if (!best || sim > best.similarity) best = { id: obj.id, similarity: sim, item: obj };
@@ -307,7 +358,7 @@ export class ResponseCache {
 
       }
 
-      if (best && best.similarity >= threshold) {
+      if (best && best.similarity >= threshold && this.isUsableHit(best.item)) {
         this.hits++;
         console.log(`[ResponseCache] HIT backend=redis id=${best.id} sim=${best.similarity.toFixed(4)}`);
         return { hit: true, similarity: best.similarity, item: best.item };
@@ -329,11 +380,14 @@ export class ResponseCache {
       let best = null;
       for (const id of ids) {
         const rec = this.items.get(id);
-        if (!rec || !rec.vector) continue;
+        if (!rec || !rec.vector || !this.isUsableHit(rec)) {
+          if (rec) this.items.delete(id);
+          continue;
+        }
         const sim = cosineSimilarity(vector, rec.vector);
         if (!best || sim > best.similarity) best = { id, similarity: sim, item: rec };
       }
-      if (best && best.similarity >= threshold) {
+      if (best && best.similarity >= threshold && this.isUsableHit(best.item)) {
         this.hits++;
         console.log(`[ResponseCache] HIT backend=memory id=${best.id} sim=${best.similarity.toFixed(4)}`);
         return { hit: true, similarity: best.similarity, item: this.stripMemoryItem(best.item) };
