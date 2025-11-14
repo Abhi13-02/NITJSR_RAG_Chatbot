@@ -6,13 +6,13 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 
 **What's going in inside**
 
-- RAG: scraper → embedding → vector search → streaming answers.
-- Scrape the site with Puppeteer, collect rich page content and PDF links, and persist snapshots under `scraped_data/`.
+- RAG: scraper → embedding → vector search → streaming answers
+- Scrape the site with Puppeteer, collect rich page content and PDF links, and persist snapshots in json format under `scraped_data/`.
 - Chunk and embed with Cohere; store semantic vectors in Pinecone.
 - Maintain a change ledger in MongoDB (per URL content hash) to avoid duplicate work and to safely delete stale vectors.
-- Serve chat with Google Gemini; retrieve top‑K relevant chunks and stream answers via Server‑Sent Events (SSE).
+- Serve chat with Google Gemini.
 - Cache heavy work: embedding cache and a semantic response cache using LSH (Redis‑backed or in‑memory fallback).
-- Enforce rate limits per session/IP using Redis or memory fallback.
+- Enforce rate limits per session/IP + menory fallback using Redis.
 
 
 ## Architecture
@@ -31,46 +31,47 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 
 ## Tech Stack
 
-- Node.js (ESM), Express, CORS
+- Node.js, Express
 - Google Generative AI (Gemini)
 - Cohere Embeddings via LangChain
 - Pinecone Vector Database
 - MongoDB (change ledger)
-- Redis (optional) for caching and rate limiting
+- Redis for caching and rate limiting
 - Puppeteer (scraper), Axios, Cheerio‑style parsing (via DOM evaluation)
-- Frontend: simple HTML/CSS/JS served from `public/` with a clean chat UI
+- Frontend: simple HTML/CSS/JS served from `public/` for testing responses from the chatbot
 
 
 ## Repository Layout
 
-- `server.js` — Express server, routes, startup and lifecycle
+- `server.js` — Express server
+- `routes/` — Routes for authentication, scraping, embedding and chatting
+- `config/` — contains authorization middlware and fucntions for connecting to DB
 - `rag-system/RagSystem.js` — RAG core (init, retrieval, streaming chat, ledger ingestion)
 - `scraper/scraper.js` — Puppeteer scraper with sitemap and PDF policy
 - `scraper/processPdfs.js` — PDF processing helpers
 - `caching/` — embedding and response caches, normalization, and chat history
 - `rate-limiting/rateLimiter.js` — per‑session/IP limiter (Redis/memory)
 - `scripts/` — CLI flows for `scrape`, `embed`, `serve`
-- `public/` — chat UI and admin reference page
+- `public/` — chat UI and admin login/dashboard pages
 - `scraped_data/` — persisted scrape snapshots (JSON)
 
 
 ## Data Flow
 
-1) Discovery & Scrape
-- Sitemap‑aware crawler discovers section pages and recent tender/notice PDFs.
-- Page DOM is filtered for main content; tables and lists are captured.
-- JSON/XHR responses are inspected to capture PDFs linked indirectly.
+**1) Discovery & Scrape**
+  - Sitemap‑aware crawler discovers section pages and recent tender/notice PDFs.
+  - JSON/XHR responses are inspected to capture PDFs linked indirectly.
 
-2) Ingestion & Embedding
-- Text is split into overlapping chunks (LangChain splitter).
-- Cohere embeddings (v3, 1024‑dim) are computed with a cache.
-- Pinecone upserts chunks; Mongo ledger tracks content hashes and versions.
-- Stale chunks are pruned safely using the ledger plan.
+**2) Ingestion & Embedding**
+  - Text is split into overlapping chunks (LangChain splitter).
+  - Cohere embeddings (v3, 1024‑dim) are computed with a cache.
+  - Pinecone upserts chunks; Mongo ledger tracks content hashes and versions.
+  - Stale chunks are pruned safely using the ledger plan.
 
-3) Query & Generation
-- For each user question, top‑K chunks are retrieved from Pinecone.
-- A structured prompt is sent to Gemini; response is streamed via SSE.
-- Response cache can short‑circuit if a highly similar question was answered recently.
+**3) Query & Generation**
+  - For each user question, top‑K chunks are retrieved from Pinecone.
+  - A structured prompt is sent to Gemini; response is streamed via SSE.
+  - Response cache can short‑circuit if a highly similar question was answered recently.
 
 
 ## For setting up locally
@@ -84,7 +85,7 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
   - Cohere embeddings (`COHERE_API_KEY`)
   - Pinecone vector database (`PINECONE_API_KEY`, index name, environment)
 - **MongoDB** connection string (Atlas or self-hosted) if you want incremental ingestion and change tracking. Without it, the pipeline falls back to a legacy upsert path.
-- **Redis** (local or remote) if you want persistent caches. A local instance is enough for development; see `docker-compose.yml`.
+- **Redis** (local or remote) if you want persistent caches. A local instance is enough for development; see `./docker-compose.yml`.
 
 
 ### Initial setup
@@ -122,9 +123,8 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
    JWT_SECRET=...
    ADMIN_PASSWORD=...
    ADMIN_USERNAME=...
-   ADMIN_PASSWORD_HASH=...
+   ADMIN_PASSWORD_HASH=...(generate a hash using the ADMIN_PASSWORD)
     
-   REACT_APP_API_URL=http://localhost:3000
    ```
       
 4. **Start supporting services (optional)**
@@ -133,10 +133,21 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 
 5. **Since the scraping and embedding routes are protected, you need to login as admin to access them**
    - Fill the admin credentials in the .env
-   - Open `https://localhost:3001/admin/login` and login using your credentials.
-   - After succesfully logging in, you'll get access to the APIs.
+   - Open `https://localhost:3000/admin/login` and login using your credentials.
+   - After succesfully logging in, you can access the APIs. You'll see an adminToken in the localStorage which may come to your use.
+  
+   NOTE: You can also login by sending a cURL request:
+   ```bash
+   curl -X POST http://localhost:3000/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{
+      "username": "admin",
+      "password": "yourpassword"
+    }'
+    ```
+   - After succesfully logging in, you'll receive a token in the response which can be used to access to the other APIs.
      
-6. **(One-time) fetch a sample PDF for pdf-parse (if Puppeteer struggles without it)**
+7. **(One-time) fetch a sample PDF for pdf-parse (if Puppeteer struggles without it)**
    ```bash
    mkdir -p test/data
    curl -L "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf" \
@@ -145,6 +156,47 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 
 
 ### Workflow
+
+You may either run the scripts or directly send a cURL request:
+
+**If you use cURL:**
+
+1. **Scrape + Embed**
+
+Triggers the complete scraping pipeline and embeds the scraped content.
+
+```bash
+curl -X POST http://localhost:3001/scrape-and-embed \
+  -b "adminToken=..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.nitjsr.ac.in/"
+  }'
+```
+
+2. **Embed Latest Only**
+
+Embeds the most recently scraped or processed data.
+
+```bash
+curl -X POST http://localhost:3001/embed-latest \
+  -b "adminToken=..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.nitjsr.ac.in/"
+  }'
+```
+
+3. **Run**
+   ```bash
+     node scraper/processPdfs.js
+   ```
+   
+   this will process all the PDFs, so for this you'll require tesseract for paring PDFs.
+
+---
+
+**Or, if you prefer running scripts instead:**
 
 1. **Scrape the website**
    ```bash
@@ -166,11 +218,12 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
    - Production style (single start + auto-init): `npm start`
    - Serve-only, no auto init (useful if vectors are already in Pinecone): `npm run serve`
 
-   The server listens on `http://localhost:PORT` (3001 by default). The web UI and REST API share the same origin. If `AUTO_INIT=true`, startup runs `initializeSystem()` which pulls the latest scrape and embeds it unless Pinecone already has vectors and `INIT_SKIP_EMBED_IF_INDEX_NOT_EMPTY` is true.
+   The server listens on `http://localhost:PORT` (3000 by default). The web UI and REST API share the same origin. If `AUTO_INIT=true`, startup runs `initializeSystem()` which pulls the latest scrape and embeds it unless Pinecone already has vectors and `INIT_SKIP_EMBED_IF_INDEX_NOT_EMPTY` is true.
 
 4. **Chat / monitor**
    - Visit `http://localhost:PORT/` for the UI.
    - Hit REST endpoints (see below) for health, stats, and manual control.
+
 
 
 ## API endpoints (served from ./routes/)
@@ -178,6 +231,7 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 - `POST /initialize` -> validates env vars, loads the latest scrape (or creates a new one), embeds, and marks the system initialized.
 - `POST /embed-latest` -> reprocesses the newest file in `scraped_data/` and pushes vectors (requires Mongo for the ledger mode).
 - `POST /scrape` -> triggers a fresh scrape; `{ "force": true }` clears Pinecone first.
+- `POST /scrape-and-embed` -> the api is self-explanatory
 - `POST /chat` -> `{ "question": "..." }` returns an answer, sources, and relevant links; uses the response cache when available.
 - `GET /stats` -> aggregates Pinecone, Mongo, and scrape file counts.
 - `GET /reindex/preview` -> dry-run of the ledger ingestion that reports adds, updates, and deletes without touching Pinecone.
