@@ -86,7 +86,6 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 - **MongoDB** connection string (Atlas or self-hosted) if you want incremental ingestion and change tracking. Without it, the pipeline falls back to a legacy upsert path.
 - **Redis** (local or remote) if you want persistent caches. A local instance is enough for development; see `docker-compose.yml`.
 
----
 
 ### Initial setup
 
@@ -144,7 +143,6 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
      -o "test/data/05-versions-space.pdf"
    ```
 
----
 
 ### Workflow
 
@@ -174,7 +172,6 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
    - Visit `http://localhost:PORT/` for the UI.
    - Hit REST endpoints (see below) for health, stats, and manual control.
 
----
 
 ## API endpoints (served from ./routes/)
 - `GET /health` -> readiness info, cache stats, Pinecone totals, Mongo status.
@@ -188,7 +185,6 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
 - `GET /links` -> flattened view of the link database (PDFs, internal pages) once the system is initialized.
 - `GET /test-gemini` / `GET /test-pinecone` -> connectivity probes for external services.
 
----
 
 ## npm scripts and utilities
 - `npm run scrape` -> launches `scripts/scrape.js`; accepts `--maxPages`, `--maxDepth`, `--delay`.
