@@ -1,0 +1,13 @@
+\chapter*{\centering Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+\noindent
+This project presents a Retrieval-Augmented Generation (RAG) based chatbot designed to provide accurate and contextual information about the National Institute of Technology Jamshedpur by intelligently crawling and indexing its official website. The system addresses the challenge of fragmented information across web pages and PDF documents by implementing an intelligent assistant that delivers precise, source-grounded answers with relevant citations and streaming responses. The chatbot leverages a comprehensive pipeline: web scraping with Puppeteer, semantic embeddings via Cohere, vector storage in Pinecone, and natural language generation using Google Gemini.
+
+The architecture implements a robust scraping mechanism with sitemap awareness, categorized page discovery, dynamic JSON/XHR parsing, and PDF link extraction. Content is chunked using LangChain's text splitter and embedded using Cohere's v3 model (1024-dimensional vectors), which are stored in Pinecone vector database with cosine similarity indexing. A sophisticated change detection mechanism using MongoDB maintains a ledger of content hashes per URL, enabling incremental updates and safe deletion of stale vectors without redundant processing. The system employs Google Gemini (gemini-2.5-flash) for response generation with Server-Sent Events (SSE) streaming, providing real-time user feedback.
+
+To optimize performance and resource utilization, the implementation includes multi-layered caching strategies: an embedding cache using Redis-backed LRU for vector reuse, and an LSH-based semantic response cache that identifies similar queries to avoid redundant API calls. Additional features include Redis-backed rate limiting with memory fallback for abuse prevention, comprehensive admin endpoints for system monitoring and control, and a web-based dashboard for maintenance operations. The system successfully demonstrates how RAG architectures can transform institutional information access, providing students, faculty, and visitors with instant, accurate answers while maintaining source attribution and handling diverse queries ranging from admission procedures to faculty information and recent announcements.
+
+\vspace{0.8in}
+
+\noindent\textbf{Keywords}: Retrieval-Augmented Generation, Natural Language Processing, Vector Database, Web Scraping, Semantic Search, Chatbot, Information Retrieval, Large Language Models, Cohere Embeddings, Pinecone, MongoDB, Redis Caching

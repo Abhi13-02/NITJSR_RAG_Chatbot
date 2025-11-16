@@ -1,0 +1,45 @@
+\chapter{Results and Discussion}\label{ch:results}
+
+This chapter analyzes the outcomes of the RAG-based chatbot implementation and discusses challenges encountered during development.
+
+\section{Analysis of Results}
+
+\subsection{Performance Achievement}
+
+The implemented system successfully achieved its primary objectives, demonstrating significant improvements over traditional information retrieval methods. The key results include:
+
+\textbf{Response Time:} Average response time of 5.33 seconds without caching and 0.40 seconds with caching represents a substantial improvement over manual website navigation, which typically requires 45-90 seconds for users to locate specific information. The 92.5\% performance improvement through caching validates the multi-layer caching strategy.
+
+
+\section{Challenges Encountered}
+
+\subsection{Web Scraping Challenges}
+
+\subsubsection{PDF Processing Complexity}
+Extracting text from scanned PDFs required OCR (Tesseract), which introduced challenges:
+\begin{itemize}
+    \item Variable accuracy depending on scan quality
+    \item Increased processing time (2-5 seconds per page)
+    \item Layout detection issues for multi-column documents
+    \item Handling of tables and structured data within PDFs
+\end{itemize}
+
+
+\subsection{Embedding and Vector Storage Challenges}
+
+\subsubsection{Optimal Chunk Size Selection}
+Determining the ideal chunk size (1000 characters with 200-character overlap) required experimentation. Smaller chunks (500 characters) resulted in fragmented context and reduced answer quality. Larger chunks (2000+ characters) diluted relevance signals and reduced retrieval precision.
+
+\subsection{Response Generation Challenges}
+
+\subsubsection{Context Window Limitations}
+Gemini's context window, while large, occasionally proved insufficient for queries requiring extensive context from many sources. Initial attempts to include all top-10 retrieved chunks sometimes exceeded limits. The solution prioritizes chunks by relevance score and implements dynamic context truncation.
+
+\subsubsection{Citation Accuracy}
+Ensuring generated responses correctly attributed information to specific sources required careful prompt engineering. Early versions occasionally hallucinated citations or misattributed information. The final prompt explicitly instructs the model to cite sources and includes source URLs within the context.
+
+
+\subsection{Performance and Scalability Challenges}
+
+\subsubsection{API Cost}
+External API costs (Cohere embeddings, Gemini generation) accumulated quickly during development and testing. Implementing aggressive caching and reusing embeddings reduced costs by approximately 80\%, making the system economically sustainable.

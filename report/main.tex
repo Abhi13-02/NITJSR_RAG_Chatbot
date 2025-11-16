@@ -1,0 +1,132 @@
+\documentclass[letterpaper, 11pt]{report} 
+\usepackage{reportSty}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{inconsolata}
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\pgfplotsset{compat=1.18}
+
+
+\lstdefinelanguage{JavaScript}{
+    keywords={
+        break, case, catch, continue, debugger, default, delete, do, else, finally, for,
+        function, if, in, instanceof, new, return, switch, this, throw, try, typeof, var,
+        let, const, void, while, with, yield, async, await
+    },
+    keywordstyle=\color{blue}\bfseries,
+    ndkeywords={class, export, boolean, throw, implements, import, this},
+    ndkeywordstyle=\color{magenta}\bfseries,
+    identifierstyle=\color{black},
+    sensitive=false,
+    comment=[l]{//},
+    morecomment=[s]{/*}{*/},
+    commentstyle=\color{green!50!black}\ttfamily,
+    stringstyle=\color{red}\ttfamily,
+    morestring=[b]',
+    morestring=[b]"
+}
+
+
+% Define JSON for listings
+\lstdefinelanguage{JSON}{
+    basicstyle=\ttfamily\small,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=8pt,
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!10},
+    literate=
+     *{0}{{{\color{blue}0}}}{1}
+      {1}{{{\color{blue}1}}}{1}
+      {2}{{{\color{blue}2}}}{1}
+      {3}{{{\color{blue}3}}}{1}
+      {4}{{{\color{blue}4}}}{1}
+      {5}{{{\color{blue}5}}}{1}
+      {6}{{{\color{blue}6}}}{1}
+      {7}{{{\color{blue}7}}}{1}
+      {8}{{{\color{blue}8}}}{1}
+      {9}{{{\color{blue}9}}}{1}
+      {:}{{{\color{black}{:}}}}{1}
+      {,}{{{\color{black}{,}}}}{1}
+      {\{}{{{\color{black}{\{}}}}{1}
+      {\}}{{{\color{black}{\}}}}}{1}
+      {[}{{{\color{black}{[}}}}{1}
+      {]}{{{\color{black}{]}}}}{1}
+      {"}{{{\color{red}{"}}}}{1},
+}
+
+
+% Define Bash for listings
+\lstdefinelanguage{bash}{
+    basicstyle=\ttfamily\small,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=8pt,
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!10},
+    keywordstyle=\color{blue}\bfseries,
+    stringstyle=\color{red},
+    commentstyle=\color{green!50!black},
+    morekeywords={
+        if, then, else, fi,
+        for, in, do, done,
+        case, esac,
+        while, until,
+        function,
+        echo, export, source,
+        sudo, apt, yum, dnf, pacman,
+        chmod, chown, pwd, cd, ls, rm, mv, cp,
+        mkdir, rmdir, cat, grep, find, awk, sed
+    }
+}
+
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true,
+    captionpos=b,
+}
+
+
+
+\begin{document}
+
+\pagenumbering{roman}
+
+\input{front/cover.tex}
+\cleardoublepage
+
+\input{front/abstract.tex}
+\input{front/acknowlegement.tex}
+
+\tableofcontents
+% \addcontentsline{toc}{chapter}{Table of Contents}
+
+\newpage
+\onehalfspacing
+\setcounter{page}{1}
+\pagenumbering{arabic}
+
+\input{front/abbreviations.tex}
+
+\input{chapters/introduction.tex}
+\input{chapters/methodology.tex}
+\input{chapters/testing.tex}
+\input{chapters/results.tex}
+\input{chapters/conclusion.tex}
+
+% \printbibliography[heading=bibintoc]
+
+
+\end{document}

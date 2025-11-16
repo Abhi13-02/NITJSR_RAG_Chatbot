@@ -1,0 +1,551 @@
+\chapter{Methodology and Implementation}\label{ch:methodology}
+
+This chapter presents a comprehensive overview of the system architecture, implementation methodology, and the technical workflow employed in developing the RAG-based chatbot for NIT Jamshedpur.
+
+\section{System Architecture Overview}
+
+The chatbot system implements a complete Retrieval-Augmented Generation pipeline that transforms unstructured web content into a conversational interface. 
+
+The architecture comprises the following core components:
+
+\begin{itemize}
+    \item \textbf{Web Scraper Module:} Puppeteer-based crawler with sitemap awareness and dynamic content handling
+    \item \textbf{Text Processing Pipeline:} LangChain-powered chunking and preprocessing system
+    \item \textbf{Embedding System:} Cohere API integration for semantic vector generation
+    \item \textbf{Vector Database:} Pinecone index for efficient similarity search
+    \item \textbf{Change Ledger:} MongoDB-based tracking system for incremental updates
+    \item \textbf{Caching Layer:} Multi-level Redis-backed cache for embeddings and responses
+    \item \textbf{Generation Engine:} Google Gemini integration with streaming capabilities
+    \item \textbf{API Server:} Express-based REST API with authentication and rate limiting
+\end{itemize}
+
+\section{Data Acquisition and Processing}
+
+\subsection{Web Scraping Strategy}
+
+The scraping module implements an intelligent crawling strategy that respects server resources while ensuring comprehensive content coverage.
+
+\subsubsection{Sitemap-Aware Discovery}
+The scraper begins by parsing the website's sitemap XML file to discover all available pages systematically. This approach ensures complete coverage and reduces the risk of missing important sections. The sitemap provides structured metadata including page priorities, last modification dates, and change frequencies.
+
+\subsubsection{Categorized Pages}
+Content is classified into categories during scraping: academic pages, administrative information, notices, tenders, faculty profiles, and research publications. This categorization enables targeted retrieval and helps users understand the source context of information.
+
+\subsubsection{Dynamic Content Handling}
+Many modern websites load content dynamically via JavaScript. The scraper uses Puppeteer to execute JavaScript, wait for dynamic elements to render, and intercept XHR/fetch requests to capture data loaded asynchronously. This is particularly important for sections like recent notices and announcements that are often loaded via AJAX calls.\\[0.3cm]
+
+
+\begin{lstlisting}[
+    caption={Puppeteer scraping with dynamic content handling}, 
+    label={lst:puppeteer_scrape},
+    language=JavaScript
+]
+// Example scraping code
+const page = await browser.newPage();
+await page.goto(url, { waitUntil: 'networkidle2' });
+
+// Wait for dynamic content
+await page.waitForSelector('.content-loaded');
+
+// Extract text content
+const content = await page.evaluate(() => {
+    return document.body.innerText;
+});
+\end{lstlisting}
+
+
+
+\subsubsection{PDF Link Extraction}
+The scraper identifies and catalogs PDF documents linked from web pages. PDFs containing tenders, notices, academic calendars, and policy documents are processed separately using OCR (Tesseract) when necessary to extract text content.
+
+\subsection{Data Persistence Format}
+
+Scraped data is persisted in JSON format with comprehensive metadata:
+
+% INSERT CODE SNIPPET HERE - Example JSON structure
+\begin{lstlisting}[
+    caption={Puppeteer scraping with dynamic content handling}, 
+    label={lst:puppeteer_scrape},
+    language=JSON
+]
+ {
+    "url": "https://nitjsr.ac.in/Alumni",
+    "text": "> Alumni Corner",
+    "title": "",
+    "sourceUrl": "https://nitjsr.ac.in/people/profile/PH102",
+    "sourceTitle": "Profile | NIT Jamshedpur",
+    "context": "> Convocation 2023  > Alumni Corner  > NIT JSR Alumni Association(NITJAA)  > Rankings  > Recruitment"
+  }
+\end{lstlisting}
+
+The content hash enables change detection—only modified pages trigger re-embedding, significantly reducing computational costs and API usage.
+
+\section{Knowledge Representation Pipeline}
+
+\subsection{Text Chunking Strategy}
+
+Raw text is segmented into overlapping chunks to balance context preservation with embedding quality. The LangChain RecursiveCharacterTextSplitter is configured with:
+
+\begin{itemize}
+    \item \textbf{Chunk Size:} 1000 characters—long enough to maintain semantic coherence, short enough to avoid diluting relevance signals
+    \item \textbf{Chunk Overlap:} 200 characters—ensures continuity across chunk boundaries and prevents information loss at split points
+    \item \textbf{Separators:} Prioritizes natural boundaries (paragraphs, sentences) over arbitrary character counts
+\end{itemize}
+
+\subsection{Embedding Generation}
+
+Each text chunk is converted into a 1024-dimensional vector using Cohere's embedding API. The embedding process includes:
+
+\begin{enumerate}
+    \item \textbf{Text Normalization:} Removing excessive whitespace, standardizing Unicode characters
+    \item \textbf{Batch Processing:} Grouping chunks to minimize API calls and improve throughput
+    \item \textbf{Cache Lookup:} Checking Redis cache for previously computed embeddings to avoid redundant API requests
+    \item \textbf{Error Handling:} Implementing exponential backoff for rate limit errors and transient failures
+\end{enumerate}
+
+% INSERT CODE SNIPPET HERE - Embedding generation
+\begin{lstlisting}[language=JavaScript, caption={Embedding generation with caching}, label={lst:embedding_gen}]
+async function getEmbedding(text) {
+    const cacheKey = `emb:${hash(text)}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+    
+    const embedding = await cohereClient.embed({
+        texts: [text],
+        model: 'embed-english-v3.0'
+    });
+    
+    await redis.set(cacheKey, JSON.stringify(embedding), 
+                    'EX', 86400);
+    return embedding;
+}
+\end{lstlisting}
+
+\subsection{Vector Storage in Pinecone}
+
+Embeddings are uploaded to Pinecone with rich metadata that enables filtered retrieval:
+
+\begin{itemize}
+    \item \textbf{Vector ID:} Unique identifier combining page URL and chunk index
+    \item \textbf{Embedding Vector:} 1024-dimensional float array
+    \item \textbf{Metadata:} Original text, source URL, category, timestamp, page title
+\end{itemize}
+
+Pinecone's cosine similarity metric identifies semantically similar chunks during query processing, with typical retrieval times under 100ms for top-K queries.\\[0.3cm]
+
+\begin{lstlisting}[language=JavaScript, caption={Fetching results for k = 5, text = "Hello World"}]
+import { Pinecone } from "@pinecone-database/pinecone";
+import { CohereClient } from "cohere-ai";
+
+dotenv.config();
+
+const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
+
+const cohere = new CohereClient({
+    token: process.env.COHERE_API_KEY
+});
+
+async function searchWithCohere() {
+    const index = pc.index(process.env.PINECONE_INDEX_NAME);
+
+    const embed = await cohere.embed({
+        model: "embed-english-v3.0",
+        texts: ["Hello world"],
+        inputType: "search_query"
+    });
+
+    const vector = embed.embeddings[0];
+
+    const result = await index.query({
+        topK: 5,
+        includeMetadata: true,
+        vector
+    });
+
+    console.dir(result, { depth: null });
+}
+
+searchWithCohere();
+\end{lstlisting}
+
+
+
+\begin{lstlisting}[language=JSON, caption={Pinecone Query Response for the above script}]
+{
+  "matches": [
+    {
+      "id": "2a0b39cc2be0:0011:ba2d4ab8db",
+      "score": 0.353166729,
+      "values": [],
+      "sparseValues": null,
+      "metadata": {
+        "category": "academics",
+        "chunkIndex": 11,
+        "depth": 1,
+        "hasLinks": true,
+        "hasLists": false,
+        "hasTables": true,
+        "hasXHR": false,
+        "linkStats": "{\"total\":3,\"pdf\":1,\"internal\":2,\"external\":0,\"image\":0}",
+        "source": "webpage",
+        "sourceType": "page",
+        "text": "Login Credentials | User Id | Password",
+        "timestamp": "2025-11-10T05:24:41.824Z",
+        "title": "FTS",
+        "totalChunks": 22,
+        "url": "http://online.nitjsr.ac.in/fts/Login.aspx",
+        "wordCount": 1723,
+        "xhrCount": 0
+      }
+    },
+    {
+      "id": "5449aa95c76e:0011:ba2d4ab8db",
+      "score": 0.352545023,
+      "values": [],
+      "sparseValues": null,
+      "metadata": {
+        "category": "academics",
+        "chunkIndex": 11,
+        "depth": 3,
+        "hasLinks": true,
+        "hasLists": false,
+        "hasTables": true,
+        "hasXHR": false,
+        "linkStats": "{\"total\":3,\"pdf\":1,\"internal\":2,\"external\":0,\"image\":0}",
+        "source": "webpage",
+        "sourceType": "page",
+        "text": "Login Credentials | User Id | Password",
+        "timestamp": "2025-11-10T05:54:00.448Z",
+        "title": "FTS",
+        "totalChunks": 22,
+        "url": "http://online.nitjsr.ac.in/fts/",
+        "wordCount": 1723,
+        "xhrCount": 0
+      }
+    },
+    {
+      "id": "98a44b3d8e55:0004:e84aa8099e",
+      "score": 0.344810486,
+      "values": [],
+      "sparseValues": null,
+      "metadata": {
+        "category": "people",
+        "chunkIndex": 4,
+        "depth": 1,
+        "hasLinks": true,
+        "hasLists": true,
+        "hasTables": false,
+        "hasXHR": true,
+        "linkStats": "{\"total\":3,\"pdf\":0,\"internal\":3,\"external\":0,\"image\":0}",
+        "source": "webpage",
+        "sourceType": "page",
+        "text": "st1\\:*{behavior:url(#ieooui) }",
+        "timestamp": "2025-11-10T05:35:35.472Z",
+        "title": "Profile | NIT Jamshedpur",
+        "totalChunks": 22,
+        "url": "https://nitjsr.ac.in/people/profile/EC111",
+        "wordCount": 1482,
+        "xhrCount": 3
+      }
+    }
+  ],
+  "namespace": "",
+  "usage": {
+    "readUnits": 1
+  }
+}
+\end{lstlisting}
+
+
+
+
+\section{Change Detection and Incremental Updates}
+
+\subsection{MongoDB Change Ledger}
+
+The system maintains two MongoDB collections to track content versions:
+
+\begin{itemize}
+    \item \textbf{Pages Collection:} Records URL, content hash, last scraped timestamp, and embedding status. Figure 2.1 demonstrates an example.
+    \item \textbf{Chunks Collection:} Maps chunk IDs to parent pages, stores chunk hashes and Pinecone vector IDs. Figure 2.2 demonstrates an example.
+\end{itemize}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{images/mongo.png}
+    \caption{An Example of Pages Collection stored in MongoDB ledger}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{images/mongo-chunks.png}
+    \caption{An Example of Chunks Collection stored in MongoDB ledger}
+    \label{fig:placeholder}
+\end{figure}
+
+\subsection{Update Workflow}
+
+When re-scraping occurs:
+
+\begin{enumerate}
+    \item Compute SHA-256 hash of page content
+    \item Compare with stored hash in MongoDB
+    \item If unchanged, skip embedding; if changed:
+    \begin{itemize}
+        \item Delete old chunk vectors from Pinecone
+        \item Re-chunk and re-embed the updated content
+        \item Update MongoDB ledger with new hashes and vector IDs
+    \end{itemize}
+    \item Prune vectors for deleted pages
+\end{enumerate}
+
+This approach minimizes unnecessary API calls and ensures vector database consistency.
+
+\section{Query Processing and Response Generation}
+
+\subsection{Query Embedding and Retrieval}
+
+User questions follow the same embedding pipeline as documents, producing a 1024-dimensional query vector. Pinecone performs similarity search to retrieve the top-K most relevant chunks (typically K=5-10). \\[0.3cm]
+
+% INSERT API REQUEST/RESPONSE HERE - Chat API
+\begin{lstlisting}[language=bash, caption={Chat API request example}, label={lst:chat_request}]
+POST /chat HTTP/1.1
+Content-Type: application/json
+
+{
+  "question": "What are the admission requirements for M.Tech programs?"
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=JSON, caption={Chat API response structure}, label={lst:chat_response}]
+{
+  "answer": "The M.Tech admission requirements include...",
+  "sources": [
+    {
+      "url": "https://www.nitjsr.ac.in/admissions/mtech",
+      "title": "M.Tech Admissions",
+      "relevance": 0.92
+    }
+  ],
+  "confidence": 0.89
+}
+\end{lstlisting}
+
+\subsection{Context Construction}
+
+Retrieved chunks are combined into a structured prompt for Gemini:
+
+\begin{enumerate}
+    \item \textbf{System Instructions:} Define the assistant's role, response format, and citation requirements
+    \item \textbf{Context Sections:} Numbered chunks with source URLs for attribution
+    \item \textbf{User Question:} Original query as provided by the user
+    \item \textbf{Guidelines:} Instructions for factual accuracy, source citation, and handling missing information
+\end{enumerate}
+
+\begin{lstlisting}[language=JavaScript, caption={A section of the Structured Prompt}]
+const prompt = `
+    You are an AI assistant specializing in NIT Jamshedpur information. 
+    Your role is to provide accurate, helpful, and contextually aware 
+    responses based on the provided data and conversation history.
+    
+    ${historySection ? historySection : ""}
+    
+    Knowledge Base Context:
+    ${context || "No relevant context found."}
+    ${linksContext}
+    
+    Current Question: ${question}
+    ${languageInstruction}
+    
+    Instructions:
+
+    Context Awareness:
+    - Use the conversation history above to understand the full context.
+    - If the question references previous messages (e.g., "tell me more", 
+      "what about that", "its placement"), resolve them from the conversation 
+      history.
+    - Maintain consistency with earlier responses in this conversation.
+    - Resolve pronouns like "it", "that", "this" using context.
+    
+    Answer Guidelines:
+    - Base your answer primarily on the context from the database.
+    - Provide specific data points (placement %, packages, companies, year, etc.) 
+      when available.
+    - If context lacks information, clearly state that.
+    - Be concise, professional, and structured.
+    - When relevant links are available, mention them naturally.
+    - For PDFs, say: "Refer to [Document Name] (PDF): [URL]"
+    - For web pages, say: "See [Page Title]: [URL]"
+    
+    Follow-up Handling:
+    - If user asks "tell me more" or similar, expand on the most recent topic.
+    - If unsure what pronoun refers to, ask for clarification.;
+\end{lstlisting}
+
+
+\subsection{Streaming Response Generation}
+
+Gemini generates responses using Server-Sent Events (SSE), providing real-time feedback:
+
+\begin{itemize}
+    \item Tokens stream incrementally to the client
+    \item Users see partial responses immediately, improving perceived latency
+    \item Connection remains open until generation completes
+\end{itemize}
+
+
+\section{Performance Optimization}
+
+\subsection{Multi-Layer Caching}
+
+\subsubsection{Embedding Cache}
+Redis stores embeddings with text hashes as keys, eliminating redundant API calls for frequently queried terms. Implements LRU eviction with 24-hour TTL.
+
+\subsubsection{Semantic Response Cache}
+Uses Locality-Sensitive Hashing (LSH) to identify similar questions. If a query's embedding is sufficiently similar to a cached query (cosine similarity > 0.95), the cached response is returned directly, bypassing both Pinecone retrieval and Gemini generation.
+
+% INSERT CODE SNIPPET HERE - LSH caching
+\begin{lstlisting}[language=JavaScript, caption={LSH-based response caching}, label={lst:lsh_cache}]
+function getCachedResponse(queryEmbedding) {
+    const lshBuckets = computeLSHBuckets(queryEmbedding);
+    
+    for (const bucket of lshBuckets) {
+        const candidates = redis.smembers(`lsh:${bucket}`);
+        for (const candidateKey of candidates) {
+            const cached = redis.hgetall(candidateKey);
+            const similarity = cosineSimilarity(
+                queryEmbedding, 
+                cached.embedding
+            );
+            if (similarity > 0.95) return cached.response;
+        }
+    }
+    return null;
+}
+\end{lstlisting}
+
+\subsection{Rate Limiting}
+
+Redis-backed rate limiter implements sliding window algorithm:
+
+\begin{itemize}
+    \item \textbf{Session-Based:} 50 requests per hour per session ID
+    \item \textbf{IP-Based:} 100 requests per hour per IP address (fallback)
+    \item \textbf{Memory Fallback:} If Redis unavailable, in-memory Map with TTL
+\end{itemize}
+
+% INSERT API RESPONSE HERE - Rate limit exceeded
+\begin{lstlisting}[language=JSON, caption={Rate limit error response}, label={lst:rate_limit}]
+HTTP/1.1 429 Too Many Requests
+{
+  "error": "Rate limit exceeded",
+  "retryAfter": 1847,
+  "limit": 50,
+  "remaining": 0
+}
+\end{lstlisting}
+
+\section{Security and Authentication}
+
+\subsection{Admin Authentication}
+Administrative endpoints (scraping, embedding, system health) require JWT-based authentication. Credentials are stored as bcrypt hashes, and tokens expire after 24 hours.\\[0.3cm]
+
+% INSERT API REQUEST HERE - Login
+\begin{lstlisting}[language=bash, caption={Admin login request}, label={lst:login}]
+POST /auth/login HTTP/1.1
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "secure_password"
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=JSON, caption={Login response with JWT token}, label={lst:login_response}]
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresIn": "24h"
+}
+\end{lstlisting}
+
+\subsection{Environment Configuration}
+Sensitive credentials (API keys, database URIs, JWT secrets) are stored in environment variables and never committed to version control. The system validates required environment variables on startup and fails fast if critical configuration is missing.
+
+\section{System Workflow}
+
+\subsection{Initial Setup Workflow}
+
+\begin{enumerate}
+    \item Administrator triggers scraping via \texttt{POST /scrape-and-embed}
+    \item Puppeteer crawls NIT Jamshedpur website, extracting content and PDFs
+    \item Scraped data persisted to \texttt{scraped\_data/} directory as timestamped JSON
+    \item Text chunking and embedding pipeline processes all content
+    \item Vectors uploaded to Pinecone with metadata
+    \item MongoDB ledger records all page and chunk hashes
+    \item System is initialized, ready for queries
+\end{enumerate}
+
+\subsection{Incremental Update Workflow}
+
+\begin{enumerate}
+    \item Periodic re-scraping triggered (manually or via scheduler)
+    \item Content hashes compared with MongoDB ledger
+    \item Changed pages identified and re-processed
+    \item Old vectors deleted from Pinecone, new vectors uploaded
+    \item Ledger updated with new hashes and timestamps
+    \item Caches invalidated for affected content
+\end{enumerate}
+
+\subsection{Query Resolution Workflow}
+
+\begin{enumerate}
+    \item User submits question via web interface or API
+    \item Rate limiter validates request quota
+    \item Query embedded using Cohere API (with cache check)
+    \item LSH cache checked for similar previous queries
+    \item If cache miss, Pinecone retrieves top-K relevant chunks
+    \item Context constructed from retrieved chunks
+    \item Gemini generates streaming response with source citations
+    \item Response cached using LSH for future similar queries
+    \item Result returned to user with source links
+\end{enumerate}
+
+\section{API Endpoints and System Management}
+
+Table \ref{tab:api_endpoints} summarizes the available REST API endpoints for system interaction and management.
+
+\begin{table}[h!]
+\centering
+\caption{REST API Endpoints}
+\label{tab:api_endpoints}
+\begin{tabular}{|p{0.25\textwidth}|p{0.65\textwidth}|}
+\hline
+\textbf{Endpoint} & \textbf{Description} \\
+\hline
+\texttt{GET /health} & System health check, cache statistics, database status \\
+\hline
+\texttt{POST /initialize} & Initialize system: validate config, scrape, embed \\
+\hline
+\texttt{POST /scrape} & Trigger fresh website scrape with optional force flag \\
+\hline
+\texttt{POST /embed-latest} & Embed most recent scraped data \\
+\hline
+\texttt{POST /scrape-and-embed} & Combined scraping and embedding operation \\
+\hline
+\texttt{POST /chat} & Submit question, receive answer with sources \\
+\hline
+\texttt{POST /chat-stream} & Streaming chat endpoint using SSE \\
+\hline
+\texttt{GET /stats} & Aggregate statistics: vector count, page count, cache hits \\
+\hline
+\texttt{GET /sources} & List available scraped data bundles \\
+\hline
+\texttt{GET /links} & Retrieve all cataloged links (pages and PDFs) \\
+\hline
+\texttt{GET /test-gemini} & Test Gemini API connectivity \\
+\hline
+\texttt{GET /test-pinecone} & Test Pinecone database connectivity \\
+\hline
+\end{tabular}
+\end{table}

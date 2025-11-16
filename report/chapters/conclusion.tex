@@ -1,0 +1,37 @@
+\chapter{Future Work}\label{ch:conclusion}
+
+
+\section{Future Work}
+
+While the current implementation successfully meets its objectives, several enhancements and extensions can further improve the system's capabilities and applicability.
+
+\subsection{Scraper Logic Enhancements}
+
+\subsubsection{Better Crawling Strategies}
+The current scraper follows a breadth-first approach with configurable depth limits. Future work should implement:
+
+\begin{itemize}
+    \item \textbf{Priority-Based Crawling:} Intelligent prioritization based on content freshness, page importance, and historical update patterns. Critical sections like notices and tenders should be scraped more frequently than stable content.
+    
+    \item \textbf{Distributed Scraping:} Implement parallel scraping with multiple Puppeteer instances to reduce total scraping time from 45-60 minutes to under 10 minutes for large websites.
+\end{itemize}
+
+\subsubsection{Enhanced PDF Processing}
+Current PDF handling requires improvement in several areas:
+
+\begin{itemize}
+    \item \textbf{Layout-Aware Extraction:} Implement column detection and table extraction algorithms to preserve document structure and improve text quality.
+    
+    \item \textbf{OCR Optimization:} Pre-processing image enhancement (deskewing, noise reduction, contrast adjustment) to improve Tesseract OCR accuracy, particularly for low-quality scans.
+    
+    \item \textbf{Selective PDF Processing:} Intelligent filtering to skip non-textual PDFs (images, forms) that provide minimal value while consuming significant processing time.
+\end{itemize}
+
+\subsection{Backend Integration and Architecture Improvements}
+
+\subsubsection{Database Integration}
+The system currently operates as a standalone service. Future enhancements should include:
+
+\begin{itemize}
+    \item \textbf{University Management System Integration:} Direct connection to institutional databases for real-time data access (course schedules, exam timetables, hostel availability, library resources).
+\end{itemize}

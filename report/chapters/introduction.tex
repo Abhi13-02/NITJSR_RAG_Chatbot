@@ -1,0 +1,77 @@
+\chapter{Introduction}\label{ch:intro}
+
+\section{Background}
+The exponential growth of information on institutional websites has created significant challenges in information accessibility and retrieval. Educational institutions, maintain extensive web presences with information distributed across hundreds of pages, PDF documents, notices, and dynamic content sections. Students, faculty, prospective applicants, and visitors often struggle to locate specific information efficiently, leading to frustration and repeated queries to administrative staff. 
+
+Recent advances in Natural Language Processing (NLP) and Large Language Models (LLMs) have opened new possibilities for intelligent information retrieval systems. Retrieval-Augmented Generation (RAG) has emerged as a powerful paradigm that combines the strengths of neural information retrieval with the generative capabilities of LLMs \cite{Ramesh2020}. Unlike standalone language models that rely solely on their training data, RAG systems retrieve relevant information from external knowledge bases in real-time and use this context to generate accurate, grounded responses. This approach significantly reduces hallucinations.
+
+This project addresses the information accessibility challenge at NIT Jamshedpur by developing a RAG-based chatbot that serves as an intelligent assistant for the institution's official website. The system implements a complete end-to-end pipeline using web scraping, semantic embedding, vector storage, and context-aware response generation. 
+
+\section{Motivation}
+The motivation for this project stems from several key observations and challenges in the current state of institutional information systems:
+
+\textbf{Information Fragmentation:} NIT Jamshedpur's official website contains information distributed across multiple sections—academic programs, admissions, faculty profiles, research activities, academic information, placement statistics, notices, and tender documents. Users must navigate through numerous pages and PDFs to find specific information, which is time-consuming and inefficient. A centralized interface that understands natural language queries can dramatically improve the user experience.
+
+\textbf{Limited Search Capabilities:} Traditional search functionality on institutional websites relies on keyword matching, which fails to capture semantic relationships and user intent. For instance, a query like "What are the placement opportunities for CSE students?" requires understanding the connection between "placement opportunities," "Computer Science," and relevant statistical data, which is a task beyond the capability of conventional search systems.
+
+\textbf{Dynamic Content:} Institutional websites are constantly updated with new notices, announcements and academic calendars. Maintaining an up-to-date knowledge base that reflects these changes requires an automated system capable of detecting content modifications and incrementally updating its knowledge representation without complete reindexing.
+
+
+\section{Objectives}
+The primary objectives of this project are structured as follows:
+
+\begin{enumerate}
+    \item \textbf{Comprehensive Data Collection:} Develop a web scraping system capable of crawling the entire website, including static pages, dynamically loaded content, and PDF documents. The scraper must handle various content types, respect rate limits, and maintain a structured repository of extracted information.
+    
+    \item \textbf{Semantic Knowledge Representation:} Implement an efficient chunking and embedding pipeline that converts textual content into high-dimensional semantic vectors using Cohere's embedding model. Store these vectors in Pinecone database with appropriate indexing to enable fast similarity-based retrieval.
+    
+    \item \textbf{Change Detection:} Implement a change ledger system using MongoDB that tracks content modifications through hash-based comparison. The system should support incremental updates, identifying new, modified, and deleted content to maintain vector database consistency without redundant processing.
+    
+    \item \textbf{Context-Aware Response Generation:} Integrate Google Gemini language model to generate accurate, contextual responses based on retrieved information. Implement streaming responses using Server-Sent Events (SSE) for better interactivity.
+    
+    \item \textbf{Performance Optimization:} Develop embedding cache for vector reuse and LSH-based semantic response cache for similar queries. Implement Redis-backed rate limiting to prevent abuse while ensuring responsive performance for legitimate users.
+    
+    \item \textbf{Source Attribution and Verification:} Ensure that all generated responses include proper citations with links to original sources, enabling users to verify information and explore topics in greater depth.
+    
+    \item \textbf{System Monitoring and Maintenance:} Create administrative interface and API endpoints for system health monitoring, manual scraping triggers, embedding operations, and cache management.
+    
+    \item \textbf{Scalability and Reliability:} Design the system architecture to handle concurrent users, gracefully degrade when external services are unavailable, and provide fallback mechanisms for critical components like caching and rate limiting.
+\end{enumerate}
+
+\section{System Overview}
+The architecture comprises three main phases: data acquisition and processing, knowledge representation and storage, and query processing and response generation.
+
+
+In the \textbf{data acquisition phase}, a Puppeteer-based scraper crawls the NIT Jamshedpur website with sitemap awareness, extracting content from HTML pages and identifying PDF documents. Extracted data is persisted in JSON format with timestamps and metadata for subsequent processing.
+
+The \textbf{knowledge representation phase} processes the scraped content through a chunking mechanism that splits text into overlapping segments suitable for embedding. Cohere's embedding model converts these chunks into 1024-dimensional vectors representing their semantic meaning. These vectors are uploaded to Pinecone, a vector database optimized for similarity search. Concurrently, MongoDB maintains a change ledger that records content hashes, chunk identifiers, and version information, enabling incremental updates.
+
+During the \textbf{query processing phase}, user questions are embedded using the same Cohere model, and Pinecone performs similarity search to retrieve the most relevant content chunks. These chunks provide context for Google Gemini, which generates a comprehensive answer synthesizing information from multiple sources. The response is streamed back to the user via Server-Sent Events. Throughout this process, Redis-backed caches optimize performance by reusing embeddings for repeated queries and serving cached responses for similar questions.
+
+The system architecture emphasizes modularity, with clear separation of concerns between scraping, embedding, storage, and generation components.
+
+\section{Organization of the Report}
+The remainder of this report is organized as follows:
+
+\begin{enumerate}
+
+    \item \textbf{Chapter 2: Methodology and Implementation}
+    
+    Provides a detailed description of the system architecture, explaining the rationale behind technology choices, data flow between components, web scraping algorithm and design patterns employed.
+    
+    \item \textbf{Chapter 3: Testing and Evaluation}
+    
+    Presents the testing methodology and performance evaluation, demonstrating the system's capabilities across various query types.
+    
+    \item \textbf{Chapter 4: Results and Discussion}
+    
+    Analyzes the results, discusses challenges encountered during development, and examines the system's strengths and limitations.
+    
+    \item \textbf{Chapter 5: Conclusions and Future Work}
+    
+    Concludes the report with potential directions for future work and enhancements.
+    
+    \item \textbf{References}
+    
+    Includes references to all cited works.
+\end{enumerate}

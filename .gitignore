@@ -17,3 +17,6 @@ todo
 # temporary files
 tmp*
 generate-hash.*
+
+# logs generated when compiling tex report
+.log
