@@ -74,6 +74,9 @@ AI assistant that answers questions about NIT Jamshedpur using Retrieval‑Augme
   - Response cache can short‑circuit if a highly similar question was answered recently.
 
 
+![Architecture](public/assets/flow.png)
+
+
 ## For setting up locally
 
 ### Prerequisites
@@ -247,3 +250,18 @@ curl -X POST http://localhost:3001/embed-latest \
 - `npm run dev` -> nodemon watch mode for `server.js`.
 - `npm run test:redis-emb-cache` / `npm run inspect:redis-emb-key` -> utilities for the embedding cache.
 - `node testScraper.js` -> small harness that scrapes a handful of pages and prints a verbose summary.
+
+
+## Contributors (in alphabetical order)
+- Abhinav Dev C
+- Chandrima Hazra
+- Hemanvitha Pullela
+- Om Raj
+- Pritom Roy
+
+
+### Turnitin assessment
+
+![report](public/assets/turnitin-report.png)
+
+![ppt](public/assets/turnitin-ppt.png)
